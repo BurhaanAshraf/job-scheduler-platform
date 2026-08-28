@@ -1,0 +1,22 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go build output
+/bin/
+
+# Environment files
+.env
+.env.*
+
+# Coverage
+coverage.out
+
+# Local overrides
+*.local
+*.override
