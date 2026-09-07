@@ -11,7 +11,7 @@ func Recovery(next http.Handler) http.Handler {
 		defer func() {
 			// recover only works when called from a deferred function during a panic
 			if err := recover(); err != nil {
-				http.Error(w, "internal server error", http.StatusInternalServerError)
+				WriteError(w , http.StatusInternalServerError , "INTERNAL_SERVER_ERROR" , "internal server error")
 
 			}
 		}()
