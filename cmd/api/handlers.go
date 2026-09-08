@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -55,15 +56,45 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 
 	jobID, err := h.jobRepo.Create(r.Context(), input)
 
-	if err != nil {
-		api.WriteError(w, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to create job")
+	if err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": jobID,
+		})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id": jobID,
-	})
+
+	if errors.Is(err, repository.ErrConflict) {
+		job, lookupErr := h.jobRepo.GetByIdempotencyKey(
+			r.Context(),
+			req.IdempotencyKey,
+		)
+		if lookupErr != nil {
+			api.WriteError(
+				w,
+				http.StatusInternalServerError,
+				"INTERNAL_SERVER_ERROR",
+				"failed to retrieve existing job",
+			)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": job.ID,
+		})
+		return
+	}
+
+	api.WriteError(
+		w,
+		http.StatusInternalServerError,
+		"INTERNAL_SERVER_ERROR",
+		"failed to create job",
+	)
 }
 
 func validateCreateJobRequest(req CreateJobRequest) error {

@@ -190,11 +190,11 @@ func (r *JobRepository) ListByStatus(ctx context.Context, status string, limit, 
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	query := `SELECT id , type , payload , status , run_at , attempts , max_attempts , idempotency_key , callback_url , last_error , created_at , updated_at 
-	FROM jobs 
-	WHERE status = $1 
-	ORDER BY created_at ASC 
-	LIMIT $2 
+	query := `SELECT id , type , payload , status , run_at , attempts , max_attempts , idempotency_key , callback_url , last_error , created_at , updated_at
+	FROM jobs
+	WHERE status = $1
+	ORDER BY created_at ASC
+	LIMIT $2
 	OFFSET $3`
 
 	rows, err := r.pool.Query(ctx, query, status, limit, offset)
@@ -223,4 +223,39 @@ func (r *JobRepository) ListByStatus(ctx context.Context, status string, limit, 
 	}
 
 	return jobs, nil
+}
+
+func (r *JobRepository) GetByIdempotencyKey(ctx context.Context, key string) (Job, error) {
+	var job Job
+
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	query := `
+	SELECT id , type , payload , status , run_at , attempts , max_attempts, idempotency_key , callback_url, last_error , created_at , updated_at FROM jobs WHERE idempotency_key = $1`
+
+	err := r.pool.QueryRow(ctx, query, key).Scan(
+		&job.ID,
+		&job.Type,
+		&job.Payload,
+		&job.Status,
+		&job.RunAt,
+		&job.Attempts,
+		&job.MaxAttempts,
+		&job.IdempotencyKey,
+		&job.CallbackURL,
+		&job.LastError,
+		&job.CreatedAt,
+		&job.UpdatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Job{}, ErrNotFound
+		}
+
+		return Job{}, fmt.Errorf("failed to get job by idempotency key: %w", err)
+	}
+
+	return job, nil
 }

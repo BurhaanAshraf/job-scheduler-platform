@@ -39,6 +39,11 @@ func TestCreateJob(t *testing.T) {
 
 	var jobID uuid.UUID
 
+	jobRepo := repository.NewJobRepository(pool)
+	handler := NewHandler(jobRepo)
+
+	idempotencyKey := uuid.New().String()
+
 	t.Cleanup(func() {
 		if jobID != uuid.Nil {
 			_, err := pool.Exec(
@@ -63,11 +68,6 @@ func TestCreateJob(t *testing.T) {
 		pool.Close()
 	})
 
-	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo)
-
-	idempotencyKey := uuid.New().String()
-
 	body := fmt.Sprintf(`{
 		"type": "email",
 		"payload": {"to": "test@example.com"},
@@ -78,44 +78,72 @@ func TestCreateJob(t *testing.T) {
 
 	}`, idempotencyKey)
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(body))
+	firstReq := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(body))
 
-	req.Header.Set("Content-Type", "application/json")
+	firstReq.Header.Set("Content-Type", "application/json")
 
-	recorder := httptest.NewRecorder()
+	firstRecorder := httptest.NewRecorder()
 
-	handler.CreateJob(recorder, req)
+	handler.CreateJob(firstRecorder, firstReq)
 
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf(
-			"expected 201, got %d, body: %s",
-			recorder.Code,
-			recorder.Body.String(),
-		)
+	if firstRecorder.Code != http.StatusCreated {
+		t.Fatalf("first request: expected 201, got %d, body: %s", firstRecorder.Code, firstRecorder.Body.String())
 	}
 
-	var response struct {
+	var firstResponse struct {
 		ID uuid.UUID `json:"id"`
 	}
 
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+	if err := json.NewDecoder(firstRecorder.Body).Decode(&firstResponse); err != nil {
+		t.Fatalf("failed to decode first response: %v", err)
+	}
+
+	if firstResponse.ID == uuid.Nil {
+		t.Fatal("first response returned a zero job ID")
+	}
+
+	// Second submission
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(body))
+
+	secondReq.Header.Set("Content-Type", "application/json")
+
+	secondRecorder := httptest.NewRecorder()
+
+	handler.CreateJob(secondRecorder, secondReq)
+
+	if secondRecorder.Code != http.StatusOK {
+		t.Fatalf(
+			"expected 201, got %d, body: %s",
+			secondRecorder.Code,
+			secondRecorder.Body.String(),
+		)
+	}
+
+	var Secondresponse struct {
+		ID uuid.UUID `json:"id"`
+	}
+
+	if err := json.NewDecoder(secondRecorder.Body).Decode(&Secondresponse); err != nil {
 		t.Fatalf("failed to decode response %v", err)
 	}
 
-	if response.ID == uuid.Nil {
+	if Secondresponse.ID == uuid.Nil {
 		t.Fatal("expected a non-zero job ID")
 	}
 
-	jobID = response.ID
+	var count int
 
-	job, err := jobRepo.GetByID(context.Background(), response.ID)
+	err := pool.QueryRow(context.Background(), "SELECT COUNT(*) FROM jobs WHERE idempotency_key = $1", idempotencyKey).Scan(&count)
+
 	if err != nil {
-		t.Fatalf("failed to get created job: %v", err)
+		t.Fatalf("failed to count jobs: %v", err)
 	}
 
-	if job.ID != response.ID {
-		t.Fatalf("expected job ID %s, got %s", response.ID, job.ID)
+	if count != 1 {
+		t.Fatalf("expected exactly 1 job, got %d", count)
 	}
+
 }
 
 func TestCreateJob_InvalidJSON(t *testing.T) {
