@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/config"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/db"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/logger"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 )
 
 func main() {
@@ -30,6 +32,18 @@ func main() {
 
 	defer pool.Close()
 
-	log.Info("API server is not implemented yet...")
+	jobRepo :=  repository.NewJobRepository(pool)
+	handler := NewHandler(jobRepo)
+
+	server := &http.Server{
+		Addr:    ":" + cfg.APIPort,
+		Handler: Server(log, handler),
+	}
+	log.Info("API server listening", "addr", server.Addr)
+	err = server.ListenAndServe()
+
+	if err != nil && err != http.ErrServerClosed {
+		log.Error("HTTP server failed", "err", err)
+	}
 
 }
