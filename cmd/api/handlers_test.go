@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/google/uuid"
@@ -319,5 +322,164 @@ func TestCreateJob_InvalidCallbackURL(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", recorder.Code)
+	}
+}
+
+func TestGetJob(t *testing.T) {
+	pool := testDBPool(t)
+
+	var jobID uuid.UUID
+
+	t.Cleanup(func() {
+		if jobID != uuid.Nil {
+			_, err := pool.Exec(
+				context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
+			if err != nil {
+				t.Errorf("failed to cleanup job executions: %v", err)
+			}
+
+			_, err = pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
+
+			if err != nil {
+				t.Errorf("failed to cleanup job: %v", err)
+			}
+		}
+		pool.Close()
+	})
+
+	jobRepo := repository.NewJobRepository(pool)
+	Handler := NewHandler(jobRepo)
+	var buf bytes.Buffer
+
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	router := Server(logger, Handler)
+
+	idempotencyKey := "get-job-" + uuid.NewString()
+	callbackURL := "https://example.com/callback"
+
+	input := repository.CreateJobInput{
+		Type:           "email",
+		Payload:        json.RawMessage(`{"to":"test@example.com"}`),
+		RunAt:          time.Now().UTC().Add(time.Hour).Truncate(time.Microsecond),
+		MaxAttempts:    3,
+		IdempotencyKey: idempotencyKey,
+		CallbackURL:    &callbackURL,
+	}
+
+	createdID, err := jobRepo.Create(context.Background(), input)
+	if err != nil {
+		t.Fatalf("failed to create test job: %v", err)
+	}
+	jobID = createdID
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/"+createdID.String(), nil)
+
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var response repository.Job
+
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode job response: %v", err)
+	}
+
+	if response.ID != createdID {
+		t.Fatalf("expected job ID %s, got %s", createdID, response.ID)
+	}
+
+	if response.Type != input.Type {
+		t.Fatalf("expected type %q, got %q", input.Type, response.Type)
+	}
+
+	if string(response.Payload) != string(input.Payload) {
+		t.Fatalf(
+			"expected payload %s, got %s",
+			input.Payload,
+			response.Payload,
+		)
+	}
+
+	if response.Status != repository.StatusPending {
+		t.Fatalf(
+			"expected status %q, got %q",
+			repository.StatusPending,
+			response.Status,
+		)
+	}
+
+	if response.MaxAttempts != input.MaxAttempts {
+		t.Fatalf(
+			"expected max_attempts %d, got %d",
+			input.MaxAttempts,
+			response.MaxAttempts,
+		)
+	}
+
+	if response.IdempotencyKey != input.IdempotencyKey {
+		t.Fatalf(
+			"expected idempotency_key %q, got %q",
+			input.IdempotencyKey,
+			response.IdempotencyKey,
+		)
+	}
+
+	if response.CallbackURL == nil || *response.CallbackURL != callbackURL {
+		t.Fatalf(
+			"expected callback_url %q, got %v",
+			callbackURL,
+			response.CallbackURL,
+		)
+	}
+
+}
+
+func TestGetJob_NotFound(t *testing.T) {
+	pool := testDBPool(t)
+
+	t.Cleanup(func() {
+		pool.Close()
+	})
+	jobRepo := repository.NewJobRepository(pool)
+	handler := NewHandler(jobRepo)
+	var buf bytes.Buffer
+
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	router := Server(logger, handler)
+
+	id := uuid.New()
+
+	req := httptest.NewRequest(
+		http.MethodGet, "/v1/jobs/"+id.String(), nil)
+
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d, body: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var response struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	if response.Error.Code == "" {
+		t.Fatal("expected error code")
+	}
+
+	if response.Error.Message == "" {
+		t.Fatal("expected error message")
 	}
 }

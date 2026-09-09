@@ -11,6 +11,7 @@ import (
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/api"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
+	"github.com/google/uuid"
 )
 
 type CreateJobRequest struct {
@@ -95,6 +96,33 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 		"INTERNAL_SERVER_ERROR",
 		"failed to create job",
 	)
+}
+
+func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+
+	if err != nil {
+		api.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid job id")
+
+		return
+	}
+
+	job, err := h.jobRepo.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			api.WriteError(w, http.StatusNotFound, "NOT_FOUND", "job not found")
+			return
+		}
+
+		api.WriteError(w, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to retrieve job")
+
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	_ = json.NewEncoder(w).Encode(job)
 }
 
 func validateCreateJobRequest(req CreateJobRequest) error {
