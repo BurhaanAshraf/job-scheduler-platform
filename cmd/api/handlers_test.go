@@ -483,3 +483,89 @@ func TestGetJob_NotFound(t *testing.T) {
 		t.Fatal("expected error message")
 	}
 }
+
+func TESTAPI_ErrorResponseShape(t *testing.T) {
+	pool := testDBPool(t)
+
+	t.Cleanup(func() {
+		pool.Close()
+	})
+
+	jobRepo := repository.NewJobRepository(pool)
+	handler := NewHandler(jobRepo)
+
+	var buf bytes.Buffer
+
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	router := Server(logger, handler)
+
+	postReq := httptest.NewRequest(
+		http.MethodPost, "/v1/jobs", strings.NewReader(`{}`),
+	)
+	postReq.Header.Set("Content-Type", "application/json")
+	postRecorder := httptest.NewRecorder()
+
+	router.ServeHTTP(postRecorder, postReq)
+
+	if postRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("POST expected 400, got %d, body: %s", postRecorder.Code, postRecorder.Body.String())
+	}
+
+	var postResponse map[string]any
+
+	if err := json.NewDecoder(postRecorder.Body).Decode(&postResponse); err != nil {
+		t.Fatalf("failed to decode POST error response: %v", err)
+	}
+
+	getReq := httptest.NewRequest(
+		http.MethodGet, "/v1/jobs/"+uuid.New().String(), nil,
+	)
+
+	getRecorder := httptest.NewRecorder()
+
+	router.ServeHTTP(getRecorder, getReq)
+
+	if getRecorder.Code != http.StatusNotFound {
+		t.Fatalf("GET expected 404, got %d, body: %s", getRecorder.Code, getRecorder.Body.String())
+	}
+
+	var getResponse map[string]any
+
+	if err := json.NewDecoder(getRecorder.Body).Decode(&getResponse); err != nil {
+		t.Fatalf("failed to decode GET error response: %v", err)
+	}
+
+	if _, ok := postResponse["error"]; !ok {
+		t.Fatal("POST error response missing top-level error field")
+	}
+
+	if _, ok := getResponse["error"]; !ok {
+		t.Fatal("GET error response missing top-level error field")
+	}
+
+	postError, ok := postResponse["error"].(map[string]any)
+	if !ok {
+		t.Fatal("POST error field has unexpected shape")
+	}
+
+	getError, ok := getResponse["error"].(map[string]any)
+	if !ok {
+		t.Fatal("GET error field has unexpected shape")
+	}
+
+	if _, ok := postError["code"]; !ok {
+		t.Fatal("POST error missing code")
+	}
+
+	if _, ok := postError["message"]; !ok {
+		t.Fatal("POST error missing message")
+	}
+
+	if _, ok := getError["code"]; !ok {
+		t.Fatal("GET error missing code")
+	}
+
+	if _, ok := getError["message"]; !ok {
+		t.Fatal("GET error missing message")
+	}
+}
