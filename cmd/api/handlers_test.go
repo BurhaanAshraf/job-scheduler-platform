@@ -484,7 +484,7 @@ func TestGetJob_NotFound(t *testing.T) {
 	}
 }
 
-func TESTAPI_ErrorResponseShape(t *testing.T) {
+func TestAPI_ErrorResponseShape(t *testing.T) {
 	pool := testDBPool(t)
 
 	t.Cleanup(func() {
@@ -567,5 +567,358 @@ func TESTAPI_ErrorResponseShape(t *testing.T) {
 
 	if _, ok := getError["message"]; !ok {
 		t.Fatal("GET error missing message")
+	}
+}
+
+func TestListJobs_OversizedLimit(t *testing.T) {
+	pool := testDBPool(t)
+
+	var jobIDs []uuid.UUID
+
+	t.Cleanup(func() {
+		ctx := context.Background()
+
+		for _, jobID := range jobIDs {
+			if _, err := pool.Exec(
+				ctx,
+				"DELETE FROM job_executions WHERE job_id = $1",
+				jobID,
+			); err != nil {
+				t.Errorf("failed to cleanup job executions: %v", err)
+			}
+
+			if _, err := pool.Exec(
+				ctx,
+				"DELETE FROM jobs WHERE id = $1",
+				jobID,
+			); err != nil {
+				t.Errorf("failed to cleanup job: %v", err)
+			}
+		}
+
+		pool.Close()
+	})
+
+	jobRepo := repository.NewJobRepository(pool)
+	handler := NewHandler(jobRepo)
+
+	callbackURL := "https://example.com/callback"
+
+	// Create more jobs than the API's maximum list limit.
+	for i := 0; i < 110; i++ {
+		input := repository.CreateJobInput{
+			Type:           "pagination-test",
+			Payload:        json.RawMessage(`{"test":true}`),
+			RunAt:          time.Now().UTC(),
+			MaxAttempts:    3,
+			IdempotencyKey: fmt.Sprintf("list-limit-%s-%d", uuid.NewString(), i),
+			CallbackURL:    &callbackURL,
+		}
+
+		jobID, err := jobRepo.Create(context.Background(), input)
+		if err != nil {
+			t.Fatalf("failed to create test job %d: %v", i, err)
+		}
+
+		jobIDs = append(jobIDs, jobID)
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	router := Server(logger, handler)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/jobs?status=pending&limit=1000&offset=0",
+		nil,
+	)
+
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf(
+			"expected 200, got %d, body: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	var jobs []repository.Job
+
+	if err := json.NewDecoder(recorder.Body).Decode(&jobs); err != nil {
+		t.Fatalf("failed to decode jobs response: %v", err)
+	}
+
+	if len(jobs) != maxJobListLimit {
+		t.Fatalf(
+			"expected %d jobs after limit capping, got %d",
+			maxJobListLimit,
+			len(jobs),
+		)
+	}
+}
+
+func TestListJobs_StatusFilter(t *testing.T) {
+	pool := testDBPool(t)
+
+	var jobIDs []uuid.UUID
+
+	t.Cleanup(func() {
+		ctx := context.Background()
+
+		for _, jobID := range jobIDs {
+			if _, err := pool.Exec(
+				ctx,
+				"DELETE FROM job_executions WHERE job_id = $1",
+				jobID,
+			); err != nil {
+				t.Errorf("failed to cleanup job executions: %v", err)
+			}
+
+			if _, err := pool.Exec(
+				ctx,
+				"DELETE FROM jobs WHERE id = $1",
+				jobID,
+			); err != nil {
+				t.Errorf("failed to cleanup job: %v", err)
+			}
+		}
+
+		pool.Close()
+	})
+
+	jobRepo := repository.NewJobRepository(pool)
+	handler := NewHandler(jobRepo)
+
+	callbackURL := "https://example.com/callback"
+
+	createJob := func(key string) uuid.UUID {
+		t.Helper()
+
+		input := repository.CreateJobInput{
+			Type:           "status-filter-test",
+			Payload:        json.RawMessage(`{"test":true}`),
+			RunAt:          time.Now().UTC(),
+			MaxAttempts:    3,
+			IdempotencyKey: key,
+			CallbackURL:    &callbackURL,
+		}
+
+		jobID, err := jobRepo.Create(context.Background(), input)
+		if err != nil {
+			t.Fatalf("failed to create test job: %v", err)
+		}
+
+		jobIDs = append(jobIDs, jobID)
+		return jobID
+	}
+
+	pendingJobID := createJob("status-pending-" + uuid.NewString())
+	doneJobID := createJob("status-done-" + uuid.NewString())
+
+	if err := jobRepo.UpdateStatus(
+		context.Background(),
+		doneJobID,
+		repository.StatusDone,
+		nil,
+	); err != nil {
+		t.Fatalf("failed to update test job status: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	router := Server(logger, handler)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/jobs?status=pending&limit=100&offset=0",
+		nil,
+	)
+
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf(
+			"expected 200, got %d, body: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	var jobs []repository.Job
+
+	if err := json.NewDecoder(recorder.Body).Decode(&jobs); err != nil {
+		t.Fatalf("failed to decode jobs response: %v", err)
+	}
+
+	foundPending := false
+
+	for _, job := range jobs {
+		if job.ID == doneJobID {
+			t.Fatalf("status filter returned a done job")
+		}
+
+		if job.ID == pendingJobID {
+			foundPending = true
+		}
+
+		if job.Status != repository.StatusPending {
+			t.Fatalf(
+				"expected only pending jobs, got status %q",
+				job.Status,
+			)
+		}
+	}
+
+	if !foundPending {
+		t.Fatal("status filter did not return the pending test job")
+	}
+}
+
+func TestListJobs_Pagination(t *testing.T) {
+	pool := testDBPool(t)
+
+	var jobIDs []uuid.UUID
+
+	t.Cleanup(func() {
+		ctx := context.Background()
+
+		for _, jobID := range jobIDs {
+			if _, err := pool.Exec(
+				ctx,
+				"DELETE FROM job_executions WHERE job_id = $1",
+				jobID,
+			); err != nil {
+				t.Errorf("failed to cleanup job executions: %v", err)
+			}
+
+			if _, err := pool.Exec(
+				ctx,
+				"DELETE FROM jobs WHERE id = $1",
+				jobID,
+			); err != nil {
+				t.Errorf("failed to cleanup job: %v", err)
+			}
+		}
+
+		pool.Close()
+	})
+
+	jobRepo := repository.NewJobRepository(pool)
+	handler := NewHandler(jobRepo)
+
+	callbackURL := "https://example.com/callback"
+
+	for i := 0; i < 3; i++ {
+		input := repository.CreateJobInput{
+			Type:           "pagination-test",
+			Payload:        json.RawMessage(fmt.Sprintf(`{"index":%d}`, i)),
+			RunAt:          time.Now().UTC(),
+			MaxAttempts:    3,
+			IdempotencyKey: fmt.Sprintf("pagination-%s-%d", uuid.NewString(), i),
+			CallbackURL:    &callbackURL,
+		}
+
+		jobID, err := jobRepo.Create(context.Background(), input)
+		if err != nil {
+			t.Fatalf("failed to create test job %d: %v", i, err)
+		}
+
+		jobIDs = append(jobIDs, jobID)
+
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	router := Server(logger, handler)
+
+	// Fetch the ordered result set.
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/jobs?status=pending&limit=100&offset=0",
+		nil,
+	)
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf(
+			"expected 200, got %d, body: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	var allJobs []repository.Job
+
+	if err := json.NewDecoder(recorder.Body).Decode(&allJobs); err != nil {
+		t.Fatalf("failed to decode jobs response: %v", err)
+	}
+
+	positions := make(map[uuid.UUID]int)
+
+	for i, job := range allJobs {
+		positions[job.ID] = i
+	}
+
+	for _, jobID := range jobIDs {
+		if _, ok := positions[jobID]; !ok {
+			t.Fatalf("test job %s was not returned", jobID)
+		}
+	}
+
+	firstPosition := positions[jobIDs[0]]
+
+	// Request the page beginning at our first test job.
+	req = httptest.NewRequest(
+		http.MethodGet,
+		fmt.Sprintf(
+			"/v1/jobs?status=pending&limit=2&offset=%d",
+			firstPosition,
+		),
+		nil,
+	)
+
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf(
+			"expected 200, got %d, body: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	var page []repository.Job
+
+	if err := json.NewDecoder(recorder.Body).Decode(&page); err != nil {
+		t.Fatalf("failed to decode paginated response: %v", err)
+	}
+
+	if len(page) != 2 {
+		t.Fatalf("expected 2 jobs, got %d", len(page))
+	}
+
+	if page[0].ID != jobIDs[0] {
+		t.Fatalf(
+			"expected first paginated job %s, got %s",
+			jobIDs[0],
+			page[0].ID,
+		)
+	}
+
+	if page[1].ID != jobIDs[1] {
+		t.Fatalf(
+			"expected second paginated job %s, got %s",
+			jobIDs[1],
+			page[1].ID,
+		)
 	}
 }

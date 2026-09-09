@@ -6,12 +6,18 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/api"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/google/uuid"
+)
+
+const (
+	defaultJobListLimit = 20
+	maxJobListLimit     = 100
 )
 
 type CreateJobRequest struct {
@@ -123,6 +129,69 @@ func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (h *Handler) ListJobs(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+
+	status := query.Get("status")
+
+	limit := defaultJobListLimit
+	if value := query.Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 {
+			api.WriteError(
+				w,
+				http.StatusBadRequest,
+				"INVALID_REQUEST",
+				"limit must be a positive integer",
+			)
+			return
+		}
+
+		limit = parsed
+	}
+
+	if limit > maxJobListLimit {
+		limit = maxJobListLimit
+	}
+
+	offset := 0
+	if value := query.Get("offset"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			api.WriteError(
+				w,
+				http.StatusBadRequest,
+				"INVALID_REQUEST",
+				"offset must be a non-negative integer",
+			)
+			return
+		}
+
+		offset = parsed
+	}
+
+	jobs, err := h.jobRepo.ListByStatus(
+		r.Context(),
+		status,
+		limit,
+		offset,
+	)
+	if err != nil {
+		api.WriteError(
+			w,
+			http.StatusBadRequest,
+			"INVALID_REQUEST",
+			err.Error(),
+		)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	_ = json.NewEncoder(w).Encode(jobs)
 }
 
 func validateCreateJobRequest(req CreateJobRequest) error {
