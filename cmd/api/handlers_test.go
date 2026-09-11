@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/api"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/config"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/db"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1026,4 +1029,252 @@ func TestDeleteJob(t *testing.T) {
 			t.Fatalf("expected cancellation explanation, got %s", recorder.Body.String())
 		}
 	})
+}
+
+func TestGetJob_InvalidID(t *testing.T) {
+	handler := NewHandler(nil)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/jobs/not-a-uuid",
+		nil,
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.GetJob(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected 400, got %d, body: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	var response api.ErrorResponse
+
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	if response.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("expected code INVALID_REQUEST, got %q", response.Error.Code)
+	}
+
+	if response.Error.Message != "invalid job id" {
+		t.Fatalf("expected message %q, got %q",
+			"invalid job id",
+			response.Error.Message,
+		)
+	}
+}
+func TestListJobs_InvalidLimit(t *testing.T) {
+	handler := NewHandler(nil)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/jobs?status=pending&limit=invalid",
+		nil,
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ListJobs(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected 400, got %d, body: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	var response api.ErrorResponse
+
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	if response.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("expected code INVALID_REQUEST, got %q", response.Error.Code)
+	}
+
+	if response.Error.Message != "limit must be a positive integer" {
+		t.Fatalf(
+			"unexpected error message: %q",
+			response.Error.Message,
+		)
+	}
+}
+func TestListJobs_InvalidOffset(t *testing.T) {
+	handler := NewHandler(nil)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/jobs?status=pending&offset=-1",
+		nil,
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ListJobs(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected 400, got %d, body: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	var response api.ErrorResponse
+
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	if response.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("expected code INVALID_REQUEST, got %q", response.Error.Code)
+	}
+
+	if response.Error.Message != "offset must be a non-negative integer" {
+		t.Fatalf(
+			"unexpected error message: %q",
+			response.Error.Message,
+		)
+	}
+}
+func TestListJobs_InvalidStatus(t *testing.T) {
+	pool := testDBPool(t)
+
+	t.Cleanup(func() {
+		pool.Close()
+	})
+
+	handler := NewHandler(repository.NewJobRepository(pool))
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/jobs?status=invalid-status",
+		nil,
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ListJobs(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected 400, got %d, body: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	var response api.ErrorResponse
+
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	if response.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("expected code INVALID_REQUEST, got %q", response.Error.Code)
+	}
+
+	if !strings.Contains(response.Error.Message, "invalid job status") {
+		t.Fatalf(
+			"expected invalid job status message, got %q",
+			response.Error.Message,
+		)
+	}
+}
+func TestDeleteJob_InvalidID(t *testing.T) {
+	handler := NewHandler(nil)
+
+	req := httptest.NewRequest(
+		http.MethodDelete,
+		"/v1/jobs/not-a-uuid",
+		nil,
+	)
+	rec := httptest.NewRecorder()
+
+	handler.DeleteJob(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", rec.Code)
+	}
+
+	var response api.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response.Error.Code != "INVALID_REQUEST" {
+		t.Errorf(
+			"expected code INVALID_REQUEST, got %q",
+			response.Error.Code,
+		)
+	}
+
+	if response.Error.Message != "invalid job id" {
+		t.Errorf(
+			"expected message %q, got %q",
+			"invalid job id",
+			response.Error.Message,
+		)
+	}
+}
+func TestDeleteJob_NotFound(t *testing.T) {
+	ctx := context.Background()
+
+	cfg := config.Config{
+		DBDSN:      os.Getenv("JOB_SCHEDULER_DB_DSN"),
+		DBMaxConns: 20,
+	}
+
+	pool, err := db.NewPool(ctx, cfg)
+	if err != nil {
+		t.Fatalf("failed to create database pool: %v", err)
+	}
+	defer pool.Close()
+
+	repo := repository.NewJobRepository(pool)
+	handler := NewHandler(repo)
+
+	id := uuid.New()
+
+	req := httptest.NewRequest(
+		http.MethodDelete,
+		"/v1/jobs/"+id.String(),
+		nil,
+	)
+	req.SetPathValue("id", id.String())
+	rec := httptest.NewRecorder()
+
+	handler.DeleteJob(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", rec.Code)
+	}
+
+	var response api.ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response.Error.Code != "NOT_FOUND" {
+		t.Errorf(
+			"expected code NOT_FOUND, got %q",
+			response.Error.Code,
+		)
+	}
+
+	if response.Error.Message != "job not found" {
+		t.Errorf(
+			"expected message %q, got %q",
+			"job not found",
+			response.Error.Message,
+		)
+	}
 }
