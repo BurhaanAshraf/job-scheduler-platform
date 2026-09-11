@@ -22,6 +22,8 @@ const StatusDone = "done"
 const StatusDead = "dead"
 const StatusCancelled = "cancelled"
 
+var ErrNotCancellable = errors.New("job cannot be cancelled in its current state")
+
 var validStatuses = map[string]struct{}{
 	StatusPending:   {},
 	StatusScheduled: {},
@@ -258,4 +260,55 @@ func (r *JobRepository) GetByIdempotencyKey(ctx context.Context, key string) (Jo
 	}
 
 	return job, nil
+}
+
+func (r *JobRepository) Cancel(ctx context.Context, id uuid.UUID) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	// begin is used for transactions
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin cancellation transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var status string
+
+	err = tx.QueryRow(
+		ctx,
+		"SELECT status FROM jobs WHERE id = $1 FOR UPDATE",
+		id,
+	).Scan(&status)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+
+		return fmt.Errorf("failed to get job status: %w", err)
+	}
+
+	if status != StatusPending && status != StatusScheduled {
+		return ErrNotCancellable
+	}
+
+	_, err = tx.Exec(
+		ctx,
+		`UPDATE jobs
+			 SET status = $2, updated_at = $3
+			 WHERE id = $1`,
+		id,
+		StatusCancelled,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to cancel job: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit job cancellation: %w", err)
+	}
+
+	return nil
 }

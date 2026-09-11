@@ -194,6 +194,34 @@ func (h *Handler) ListJobs(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(jobs)
 }
 
+func (h *Handler) DeleteJob(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		api.WriteError(
+			w, http.StatusBadRequest, "INVALID_REQUEST", "invalid job id",
+		)
+		return
+	}
+
+	err = h.jobRepo.Cancel(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			api.WriteError(w, http.StatusNotFound, "NOT_FOUND", "job not found")
+			return
+		}
+		if errors.Is(err, repository.ErrNotCancellable) {
+			api.WriteError(w, http.StatusConflict, "CONFLICT", err.Error())
+			return
+		}
+		api.WriteError(w, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to cancel job")
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+
+}
+
 func validateCreateJobRequest(req CreateJobRequest) error {
 	if req.Type == "" {
 		return fmt.Errorf("type is required")

@@ -188,6 +188,7 @@ func TestCreateJob_MissingType(t *testing.T) {
 		t.Fatalf("expected 400, got %d", recorder.Code)
 	}
 }
+
 func TestCreateJob_InvalidPayload(t *testing.T) {
 	handler := NewHandler(nil)
 
@@ -270,6 +271,7 @@ func TestCreateJob_MissingIdempotencyKey(t *testing.T) {
 		t.Fatalf("expected 400, got %d", recorder.Code)
 	}
 }
+
 func TestCreateJob_MissingCallbackURL(t *testing.T) {
 	handler := NewHandler(nil)
 
@@ -921,4 +923,107 @@ func TestListJobs_Pagination(t *testing.T) {
 			page[1].ID,
 		)
 	}
+}
+
+func TestDeleteJob(t *testing.T) {
+	pool := testDBPool(t)
+
+	jobRepo := repository.NewJobRepository(pool)
+	handler := NewHandler(jobRepo)
+	router := Server(slog.Default(), handler)
+
+	var pendingJobID uuid.UUID
+	var runningJobID uuid.UUID
+
+	t.Cleanup(func() {
+		for _, id := range []uuid.UUID{pendingJobID, runningJobID} {
+			if id == uuid.Nil {
+				continue
+			}
+
+			_, err := pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", id)
+
+			if err != nil {
+				t.Errorf("failed to cleanup job executions: %v", err)
+			}
+
+			_, err = pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", id)
+
+			if err != nil {
+				t.Errorf("failed to cleanup job: %v", err)
+			}
+		}
+		pool.Close()
+	})
+
+	createJob := func(t *testing.T, key string) uuid.UUID {
+		t.Helper()
+		callbackURL := "https://example.com/callback"
+		id, err := jobRepo.Create(
+			context.Background(), repository.CreateJobInput{
+				Type:           "email",
+				Payload:        json.RawMessage(`{"to":"test@example.com"}`),
+				RunAt:          time.Now().UTC().Add(time.Hour),
+				MaxAttempts:    3,
+				IdempotencyKey: key,
+				CallbackURL:    &callbackURL,
+			},
+		)
+
+		if err != nil {
+			t.Fatalf("failed to create test job: %v", err)
+		}
+		return id
+	}
+	pendingJobID = createJob(t, "delete-pending-"+uuid.NewString())
+	runningJobID = createJob(t, "delete-running-"+uuid.NewString())
+
+	err := jobRepo.UpdateStatus(context.Background(), runningJobID, repository.StatusRunning, nil)
+
+	if err != nil {
+		t.Fatalf("failed to set running job status: %v", err)
+	}
+
+	t.Run("cancel pending job", func(t *testing.T) {
+		req := httptest.NewRequest(
+			http.MethodDelete, "/v1/jobs/"+pendingJobID.String(), nil,
+		)
+
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, req)
+
+		if recorder.Code != http.StatusNoContent {
+			t.Fatalf("expected 204, got %d, body: %s", recorder.Code, recorder.Body.String())
+		}
+
+		job, err := jobRepo.GetByID(context.Background(), pendingJobID)
+
+		if err != nil {
+			t.Fatalf("failed to get cancelled job: %v", err)
+		}
+		if job.Status != repository.StatusCancelled {
+			t.Fatalf("expected status %q, got %q", repository.StatusCancelled, job.Status)
+		}
+	})
+
+	t.Run("cannot cancel running job", func(t *testing.T) {
+		req := httptest.NewRequest(
+			http.MethodDelete, "/v1/jobs/"+runningJobID.String(), nil,
+		)
+
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, req)
+
+		if recorder.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d, body: %s", recorder.Code, recorder.Body.String())
+		}
+
+		if !strings.Contains(
+			recorder.Body.String(), "cannot be cancelled",
+		) {
+			t.Fatalf("expected cancellation explanation, got %s", recorder.Body.String())
+		}
+	})
 }

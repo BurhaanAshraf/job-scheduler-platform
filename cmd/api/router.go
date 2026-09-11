@@ -12,6 +12,7 @@ func Server(log *slog.Logger, h *Handler) http.Handler {
 	mux.HandleFunc("POST /v1/jobs", h.CreateJob)
 	mux.HandleFunc("GET /v1/jobs/{id}", h.GetJob)
 	mux.HandleFunc("GET /v1/jobs", h.ListJobs)
+	mux.HandleFunc("DELETE /v1/jobs/{id}", h.DeleteJob)
 	return api.Recovery(log, api.Logging(log, mux))
 
 }
