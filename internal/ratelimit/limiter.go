@@ -32,7 +32,7 @@ end
 return count
 `)
 
-func (l *Limiter) Allow(ctx context.Context, clientID string) (bool, error) {
+func (l *Limiter) Allow(ctx context.Context, clientID string) (bool, time.Duration, error) {
 	windowSeconds := int64(l.window.Seconds())
 	windowNumber := time.Now().Unix() / windowSeconds
 
@@ -45,8 +45,9 @@ func (l *Limiter) Allow(ctx context.Context, clientID string) (bool, error) {
 		windowSeconds,
 	).Int64()
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
+	ttl, err := l.client.TTL(ctx, key).Result()
 
-	return count <= l.limit, nil
+	return count <= l.limit, ttl, nil
 }

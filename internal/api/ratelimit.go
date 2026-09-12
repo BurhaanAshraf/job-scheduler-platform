@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/ratelimit"
@@ -20,7 +21,7 @@ func RateLimit(limiter *ratelimit.Limiter) func(http.Handler) http.Handler {
 				return
 			}
 
-			allowed, err := limiter.Allow(r.Context(), clientName)
+			allowed, ttl, err := limiter.Allow(r.Context(), clientName)
 			if err != nil {
 				WriteError(
 					w,
@@ -32,6 +33,11 @@ func RateLimit(limiter *ratelimit.Limiter) func(http.Handler) http.Handler {
 			}
 
 			if !allowed {
+				retryAfter := int64(ttl.Seconds())
+				if retryAfter < 1 {
+					retryAfter = 1
+				}
+				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 				WriteError(
 					w,
 					http.StatusTooManyRequests,

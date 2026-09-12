@@ -47,7 +47,7 @@ func TestLimiter_AllowsRequestsWithinLimit(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 1; i <= 3; i++ {
-		allowed, err := limiter.Allow(ctx, clientID)
+		allowed, _, err := limiter.Allow(ctx, clientID)
 		if err != nil {
 			t.Fatalf("request %d returned error: %v", i, err)
 		}
@@ -68,7 +68,7 @@ func TestLimiter_RejectsRequestAfterLimit(t *testing.T) {
 	ctx := context.Background()
 
 	for i := 1; i <= 3; i++ {
-		allowed, err := limiter.Allow(ctx, clientID)
+		allowed, _, err := limiter.Allow(ctx, clientID)
 		if err != nil {
 			t.Fatalf("request %d returned error: %v", i, err)
 		}
@@ -78,13 +78,16 @@ func TestLimiter_RejectsRequestAfterLimit(t *testing.T) {
 		}
 	}
 
-	allowed, err := limiter.Allow(ctx, clientID)
+	allowed, ttl, err := limiter.Allow(ctx, clientID)
 	if err != nil {
 		t.Fatalf("request 4 returned error: %v", err)
 	}
 
 	if allowed {
 		t.Fatal("request 4 was allowed, want rejected")
+	}
+	if ttl <= 0 {
+		t.Fatalf("request 4 TTL = %v, want positive TTL", ttl)
 	}
 }
 
@@ -100,7 +103,7 @@ func TestLimiter_IsolatesClients(t *testing.T) {
 
 	// Exhaust client A's limit.
 	for i := 1; i <= 2; i++ {
-		allowed, err := limiter.Allow(ctx, clientA)
+		allowed, _, err := limiter.Allow(ctx, clientA)
 		if err != nil {
 			t.Fatalf("client A request %d returned error: %v", i, err)
 		}
@@ -111,7 +114,7 @@ func TestLimiter_IsolatesClients(t *testing.T) {
 	}
 
 	// Client A is now rejected.
-	allowed, err := limiter.Allow(ctx, clientA)
+	allowed, _, err := limiter.Allow(ctx, clientA)
 	if err != nil {
 		t.Fatalf("client A request 3 returned error: %v", err)
 	}
@@ -121,7 +124,7 @@ func TestLimiter_IsolatesClients(t *testing.T) {
 	}
 
 	// Client B has its own independent counter.
-	allowed, err = limiter.Allow(ctx, clientB)
+	allowed, _, err = limiter.Allow(ctx, clientB)
 	if err != nil {
 		t.Fatalf("client B request 1 returned error: %v", err)
 	}
@@ -141,7 +144,7 @@ func TestLimiter_SetsExpiration(t *testing.T) {
 
 	ctx := context.Background()
 
-	allowed, err := limiter.Allow(ctx, clientID)
+	allowed, _, err := limiter.Allow(ctx, clientID)
 	if err != nil {
 		t.Fatalf("Allow() returned error: %v", err)
 	}
@@ -156,6 +159,35 @@ func TestLimiter_SetsExpiration(t *testing.T) {
 	ttl, err := client.TTL(ctx, key).Result()
 	if err != nil {
 		t.Fatalf("failed to get Redis TTL: %v", err)
+	}
+
+	if ttl <= 0 {
+		t.Fatalf("TTL = %v, want positive TTL", ttl)
+	}
+
+	if ttl > window {
+		t.Fatalf("TTL = %v, want <= %v", ttl, window)
+	}
+}
+
+func TestLimiter_ReturnsRemainingTTL(t *testing.T) {
+	client := testRedisClient(t)
+
+	window := 10 * time.Second
+	limiter := New(client, 1, window)
+
+	clientID := fmt.Sprintf("test-client-%d", time.Now().UnixNano())
+
+	allowed, ttl, err := limiter.Allow(
+		context.Background(),
+		clientID,
+	)
+	if err != nil {
+		t.Fatalf("Allow() returned error: %v", err)
+	}
+
+	if !allowed {
+		t.Fatal("first request was rejected, want allowed")
 	}
 
 	if ttl <= 0 {
