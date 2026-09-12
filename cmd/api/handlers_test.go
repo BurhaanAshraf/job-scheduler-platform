@@ -18,9 +18,11 @@ import (
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/api"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/config"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/db"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/ratelimit"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 func testDBPool(t *testing.T) *pgxpool.Pool {
@@ -40,6 +42,27 @@ func testDBPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("failed to ping the database: %v", err)
 	}
 	return pool
+}
+
+func testRateLimitRedis(t *testing.T) *redis.Client {
+	t.Helper()
+
+	client := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+
+	ctx := context.Background()
+
+	if err := client.Ping(ctx).Err(); err != nil {
+		client.Close()
+		t.Fatalf("failed to connect to Redis: %v", err)
+	}
+
+	t.Cleanup(func() {
+		client.Close()
+	})
+
+	return client
 }
 
 func TestCreateJob(t *testing.T) {
@@ -359,7 +382,11 @@ func TestGetJob(t *testing.T) {
 	var buf bytes.Buffer
 
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	router := Server(logger, Handler)
+
+	redisClient := testRateLimitRedis(t)
+	limiter := ratelimit.New(redisClient, 1000, time.Minute)
+
+	router := Server(logger, Handler, limiter)
 	apiKey := createTestAPIKey(t, pool)
 
 	idempotencyKey := "get-job-" + uuid.NewString()
@@ -458,7 +485,10 @@ func TestGetJob_NotFound(t *testing.T) {
 	var buf bytes.Buffer
 
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	router := Server(logger, handler)
+	redisClient := testRateLimitRedis(t)
+	limiter := ratelimit.New(redisClient, 1000, time.Minute)
+
+	router := Server(logger, handler, limiter)
 	apiKey := createTestAPIKey(t, pool)
 
 	id := uuid.New()
@@ -508,7 +538,10 @@ func TestAPI_ErrorResponseShape(t *testing.T) {
 	var buf bytes.Buffer
 
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	router := Server(logger, handler)
+	redisClient := testRateLimitRedis(t)
+	limiter := ratelimit.New(redisClient, 1000, time.Minute)
+
+	router := Server(logger, handler, limiter)
 	apiKey := createTestAPIKey(t, pool)
 
 	postReq := httptest.NewRequest(
@@ -640,7 +673,9 @@ func TestListJobs_OversizedLimit(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	router := Server(logger, handler)
+	redisClient := testRateLimitRedis(t)
+	limiter := ratelimit.New(redisClient, 1000, time.Minute)
+	router := Server(logger, handler, limiter)
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -746,7 +781,9 @@ func TestListJobs_StatusFilter(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	router := Server(logger, handler)
+	redisClient := testRateLimitRedis(t)
+	limiter := ratelimit.New(redisClient, 1000, time.Minute)
+	router := Server(logger, handler, limiter)
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -854,7 +891,9 @@ func TestListJobs_Pagination(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	router := Server(logger, handler)
+	redisClient := testRateLimitRedis(t)
+	limiter := ratelimit.New(redisClient, 1000, time.Minute)
+	router := Server(logger, handler, limiter)
 
 	// Fetch the ordered result set.
 	req := httptest.NewRequest(
@@ -949,7 +988,9 @@ func TestDeleteJob(t *testing.T) {
 
 	jobRepo := repository.NewJobRepository(pool)
 	handler := NewHandler(jobRepo)
-	router := Server(slog.Default(), handler)
+	redisClient := testRateLimitRedis(t)
+	limiter := ratelimit.New(redisClient, 1000, time.Minute)
+	router := Server(slog.Default(), handler, limiter)
 	apiKey := createTestAPIKey(t, pool)
 
 	var pendingJobID uuid.UUID
