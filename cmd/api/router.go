@@ -9,10 +9,10 @@ import (
 
 func Server(log *slog.Logger, h *Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/jobs", h.CreateJob)
-	mux.HandleFunc("GET /v1/jobs/{id}", h.GetJob)
-	mux.HandleFunc("GET /v1/jobs", h.ListJobs)
-	mux.HandleFunc("DELETE /v1/jobs/{id}", h.DeleteJob)
+	auth := api.APIKeyAuth(h.jobRepo)
+	mux.Handle("POST /v1/jobs", auth(http.HandlerFunc(h.CreateJob)))
+	mux.Handle("GET /v1/jobs/{id}", auth(http.HandlerFunc(h.GetJob)))
+	mux.Handle("GET /v1/jobs", auth(http.HandlerFunc(h.ListJobs)))
+	mux.Handle("DELETE /v1/jobs/{id}", auth(http.HandlerFunc(h.DeleteJob)))
 	return api.Recovery(log, api.Logging(log, mux))
-
 }

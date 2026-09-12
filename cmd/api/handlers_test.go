@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -358,6 +360,7 @@ func TestGetJob(t *testing.T) {
 
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	router := Server(logger, Handler)
+	apiKey := createTestAPIKey(t, pool)
 
 	idempotencyKey := "get-job-" + uuid.NewString()
 	callbackURL := "https://example.com/callback"
@@ -378,6 +381,7 @@ func TestGetJob(t *testing.T) {
 	jobID = createdID
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/"+createdID.String(), nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	recorder := httptest.NewRecorder()
 
@@ -455,11 +459,13 @@ func TestGetJob_NotFound(t *testing.T) {
 
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	router := Server(logger, handler)
+	apiKey := createTestAPIKey(t, pool)
 
 	id := uuid.New()
 
 	req := httptest.NewRequest(
 		http.MethodGet, "/v1/jobs/"+id.String(), nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	recorder := httptest.NewRecorder()
 
@@ -503,10 +509,12 @@ func TestAPI_ErrorResponseShape(t *testing.T) {
 
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	router := Server(logger, handler)
+	apiKey := createTestAPIKey(t, pool)
 
 	postReq := httptest.NewRequest(
 		http.MethodPost, "/v1/jobs", strings.NewReader(`{}`),
 	)
+	postReq.Header.Set("Authorization", "Bearer "+apiKey)
 	postReq.Header.Set("Content-Type", "application/json")
 	postRecorder := httptest.NewRecorder()
 
@@ -525,6 +533,7 @@ func TestAPI_ErrorResponseShape(t *testing.T) {
 	getReq := httptest.NewRequest(
 		http.MethodGet, "/v1/jobs/"+uuid.New().String(), nil,
 	)
+	getReq.Header.Set("Authorization", "Bearer "+apiKey)
 
 	getRecorder := httptest.NewRecorder()
 
@@ -606,6 +615,7 @@ func TestListJobs_OversizedLimit(t *testing.T) {
 
 	jobRepo := repository.NewJobRepository(pool)
 	handler := NewHandler(jobRepo)
+	apiKey := createTestAPIKey(t, pool)
 
 	callbackURL := "https://example.com/callback"
 
@@ -637,6 +647,7 @@ func TestListJobs_OversizedLimit(t *testing.T) {
 		"/v1/jobs?status=pending&limit=1000&offset=0",
 		nil,
 	)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	recorder := httptest.NewRecorder()
 
@@ -696,6 +707,7 @@ func TestListJobs_StatusFilter(t *testing.T) {
 
 	jobRepo := repository.NewJobRepository(pool)
 	handler := NewHandler(jobRepo)
+	apiKey := createTestAPIKey(t, pool)
 
 	callbackURL := "https://example.com/callback"
 
@@ -741,6 +753,7 @@ func TestListJobs_StatusFilter(t *testing.T) {
 		"/v1/jobs?status=pending&limit=100&offset=0",
 		nil,
 	)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	recorder := httptest.NewRecorder()
 
@@ -815,6 +828,7 @@ func TestListJobs_Pagination(t *testing.T) {
 
 	jobRepo := repository.NewJobRepository(pool)
 	handler := NewHandler(jobRepo)
+	apiKey := createTestAPIKey(t, pool)
 
 	callbackURL := "https://example.com/callback"
 
@@ -848,6 +862,7 @@ func TestListJobs_Pagination(t *testing.T) {
 		"/v1/jobs?status=pending&limit=100&offset=0",
 		nil,
 	)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, req)
@@ -889,6 +904,7 @@ func TestListJobs_Pagination(t *testing.T) {
 		),
 		nil,
 	)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	recorder = httptest.NewRecorder()
 	router.ServeHTTP(recorder, req)
@@ -934,6 +950,7 @@ func TestDeleteJob(t *testing.T) {
 	jobRepo := repository.NewJobRepository(pool)
 	handler := NewHandler(jobRepo)
 	router := Server(slog.Default(), handler)
+	apiKey := createTestAPIKey(t, pool)
 
 	var pendingJobID uuid.UUID
 	var runningJobID uuid.UUID
@@ -991,6 +1008,7 @@ func TestDeleteJob(t *testing.T) {
 		req := httptest.NewRequest(
 			http.MethodDelete, "/v1/jobs/"+pendingJobID.String(), nil,
 		)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 
 		recorder := httptest.NewRecorder()
 
@@ -1014,6 +1032,7 @@ func TestDeleteJob(t *testing.T) {
 		req := httptest.NewRequest(
 			http.MethodDelete, "/v1/jobs/"+runningJobID.String(), nil,
 		)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 
 		recorder := httptest.NewRecorder()
 
@@ -1277,4 +1296,27 @@ func TestDeleteJob_NotFound(t *testing.T) {
 			response.Error.Message,
 		)
 	}
+}
+func createTestAPIKey(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+
+	rawKey := uuid.NewString()
+
+	sum := sha256.Sum256([]byte(rawKey))
+	hashedKey := hex.EncodeToString(sum[:])
+
+	_, err := pool.Exec(
+		context.Background(),
+		`INSERT INTO api_keys (id, client_name, hashed_key, created_at)
+		 VALUES ($1, $2, $3, $4)`,
+		uuid.New(),
+		"test-client",
+		hashedKey,
+		time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create test API key: %v", err)
+	}
+
+	return rawKey
 }
