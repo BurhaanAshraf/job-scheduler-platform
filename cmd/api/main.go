@@ -10,8 +10,8 @@ import (
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/db"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/logger"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/ratelimit"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/redisclient"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
-	"github.com/redis/go-redis/v9"
 )
 
 func main() {
@@ -38,16 +38,12 @@ func main() {
 	jobRepo := repository.NewJobRepository(pool)
 	handler := NewHandler(jobRepo)
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr: cfg.RedisAddr,
-	})
-
-	defer redisClient.Close()
-
-	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+	redisClient, err := redisclient.New(startupCtx, cfg)
+	if err != nil {
 		log.Error("failed to connect to Redis", "error", err)
 		os.Exit(1)
 	}
+	defer redisClient.Close()
 
 	limiter := ratelimit.New(redisClient, 5, time.Minute)
 

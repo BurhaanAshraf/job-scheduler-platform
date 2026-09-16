@@ -1,0 +1,183 @@
+package stream
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+)
+
+const (
+	ReadyStream   = "jobs:ready"
+	ConsumerGroup = "workers"
+)
+
+type Message struct {
+	ID      string
+	JobID   string
+	Payload string
+}
+
+func EnsureConsumerGroup(ctx context.Context, client *redis.Client) error {
+	err := client.XGroupCreateMkStream(
+		ctx,
+		ReadyStream,
+		ConsumerGroup,
+		"$",
+	).Err()
+
+	if err == nil {
+		return nil
+	}
+
+	if strings.HasPrefix(err.Error(), "BUSYGROUP") {
+		return nil
+	}
+
+	return fmt.Errorf("create consumer group %q: %w", ConsumerGroup, err)
+}
+
+func EnqueueDue(ctx context.Context, client *redis.Client, jobID string, payload []byte) (string, error) {
+	id, err := client.XAdd(ctx, &redis.XAddArgs{
+		Stream: ReadyStream,
+		ID:     "*",
+		Values: map[string]any{
+			"job_id":  jobID,
+			"payload": string(payload),
+		},
+	}).Result()
+	if err != nil {
+		return "", fmt.Errorf("enqueue job %q: %w", jobID, err)
+	}
+
+	return id, nil
+}
+
+func ReadNext(ctx context.Context, client *redis.Client, consumerName string) ([]Message, error) {
+
+	result, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    ConsumerGroup,
+		Consumer: consumerName,
+		Streams:  []string{ReadyStream, ">"},
+		Count:    1,
+		Block:    -1,
+	}).Result()
+
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read from stream: %w", err)
+	}
+
+	messages := make([]Message, 0)
+
+	for _, stream := range result {
+		for _, message := range stream.Messages {
+			jobID, ok := message.Values["job_id"].(string)
+			if !ok {
+				return nil, fmt.Errorf("stream message %q missing job_id", message.ID)
+			}
+
+			payload, ok := message.Values["payload"].(string)
+			if !ok {
+				return nil, fmt.Errorf("stream message %q missing payload", message.ID)
+			}
+
+			messages = append(messages, Message{
+				ID:      message.ID,
+				JobID:   jobID,
+				Payload: payload,
+			})
+		}
+	}
+
+	return messages, nil
+}
+
+func Acknowledge(ctx context.Context, client *redis.Client, messageID string) (int64, error) {
+	count, err := client.XAck(ctx, ReadyStream, ConsumerGroup, messageID).Result()
+	if err != nil {
+		return 0, fmt.Errorf("acknowledge message %q: %w", messageID, err)
+	}
+
+	return count, nil
+}
+
+type PendingMessage struct {
+	ID            string
+	Consumer      string
+	Idle          time.Duration
+	DeliveryCount int64
+}
+
+func ListStalePending(ctx context.Context, client *redis.Client, minIdle time.Duration, count int64) ([]PendingMessage, error) {
+	pending, err := client.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: ReadyStream,
+		Group:  ConsumerGroup,
+		Start:  "-",
+		End:    "+",
+		Count:  count,
+		Idle:   minIdle,
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("list stale pending messages: %w", err)
+	}
+
+	messages := make([]PendingMessage, 0, len(pending))
+
+	for _, entry := range pending {
+		messages = append(messages, PendingMessage{
+			ID:            entry.ID,
+			Consumer:      entry.Consumer,
+			Idle:          entry.Idle,
+			DeliveryCount: entry.RetryCount,
+		})
+	}
+
+	return messages, nil
+}
+
+func Claim(ctx context.Context, client *redis.Client, consumerName string, minIdle time.Duration, messageIDs ...string) ([]Message, error) {
+	claimed, err := client.XClaim(ctx, &redis.XClaimArgs{
+		Stream:   ReadyStream,
+		Group:    ConsumerGroup,
+		Consumer: consumerName,
+		MinIdle:  minIdle,
+		Messages: messageIDs,
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("claim pending messages: %w", err)
+	}
+
+	messages := make([]Message, 0, len(claimed))
+
+	for _, message := range claimed {
+		jobID, ok := message.Values["job_id"].(string)
+		if !ok {
+			return nil, fmt.Errorf(
+				"claimed message %q missing job_id",
+				message.ID,
+			)
+		}
+
+		payload, ok := message.Values["payload"].(string)
+		if !ok {
+			return nil, fmt.Errorf(
+				"claimed message %q missing payload",
+				message.ID,
+			)
+		}
+
+		messages = append(messages, Message{
+			ID:      message.ID,
+			JobID:   jobID,
+			Payload: payload,
+		})
+	}
+
+	return messages, nil
+}
