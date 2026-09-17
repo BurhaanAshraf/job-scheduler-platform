@@ -71,7 +71,8 @@ func TestCreateJob(t *testing.T) {
 	var jobID uuid.UUID
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo)
+	redisClient := testRateLimitRedis(t)
+	handler := NewHandler(jobRepo, redisClient)
 
 	idempotencyKey := uuid.New().String()
 
@@ -178,7 +179,7 @@ func TestCreateJob(t *testing.T) {
 }
 
 func TestCreateJob_InvalidJSON(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 
 	body := `{"type": "email",`
 
@@ -196,7 +197,7 @@ func TestCreateJob_InvalidJSON(t *testing.T) {
 }
 
 func TestCreateJob_MissingType(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 	body := `{
 		"payload": {"to": "test@example.com"},
 		"run_at": "2026-09-07T12:00:00Z",
@@ -218,7 +219,7 @@ func TestCreateJob_MissingType(t *testing.T) {
 }
 
 func TestCreateJob_InvalidPayload(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 
 	body := `{
 		"type": "email",
@@ -246,7 +247,7 @@ func TestCreateJob_InvalidPayload(t *testing.T) {
 }
 
 func TestCreateJob_InvalidMaxAttempts(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 
 	body := `{
 		"type": "email",
@@ -274,7 +275,7 @@ func TestCreateJob_InvalidMaxAttempts(t *testing.T) {
 }
 
 func TestCreateJob_MissingIdempotencyKey(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 
 	body := `{
 		"type": "email",
@@ -301,7 +302,7 @@ func TestCreateJob_MissingIdempotencyKey(t *testing.T) {
 }
 
 func TestCreateJob_MissingCallbackURL(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 
 	body := `{
 		"type": "email",
@@ -330,7 +331,7 @@ func TestCreateJob_MissingCallbackURL(t *testing.T) {
 }
 
 func TestCreateJob_InvalidCallbackURL(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 
 	body := `{
 		"type": "email",
@@ -352,6 +353,129 @@ func TestCreateJob_InvalidCallbackURL(t *testing.T) {
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", recorder.Code)
+	}
+}
+
+func TestCreateJob_FutureJobIsScheduled(t *testing.T) {
+	pool := testDBPool(t)
+	redisClient := testRateLimitRedis(t)
+
+	jobRepo := repository.NewJobRepository(pool)
+	handler := NewHandler(jobRepo, redisClient)
+
+	jobID := uuid.Nil
+	idempotencyKey := uuid.New().String()
+	runAt := time.Now().UTC().Add(10 * time.Second)
+
+	t.Cleanup(func() {
+		if jobID != uuid.Nil {
+			_, err := pool.Exec(
+				context.Background(),
+				"DELETE FROM job_executions WHERE job_id = $1",
+				jobID,
+			)
+			if err != nil {
+				t.Errorf("failed to cleanup job executions: %v", err)
+			}
+
+			_, err = pool.Exec(
+				context.Background(),
+				"DELETE FROM jobs WHERE id = $1",
+				jobID,
+			)
+			if err != nil {
+				t.Errorf("failed to cleanup job: %v", err)
+			}
+		}
+
+		pool.Close()
+	})
+
+	ctx := context.Background()
+
+	// Isolate this test's Redis state.
+	if err := redisClient.Del(
+		ctx,
+		"jobs:ready",
+		"jobs:scheduled",
+		"jobs:scheduled:data",
+	).Err(); err != nil {
+		t.Fatalf("failed to clean Redis: %v", err)
+	}
+
+	body := fmt.Sprintf(`{
+		"type": "email",
+		"payload": {"to": "future@example.com"},
+		"run_at": %q,
+		"max_attempts": 3,
+		"idempotency_key": %q,
+		"callback_url": "https://example.com/callback"
+	}`, runAt.Format(time.RFC3339Nano), idempotencyKey)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/jobs",
+		strings.NewReader(body),
+	)
+	req.Header.Set("Content-Type", "application/json")
+
+	recorder := httptest.NewRecorder()
+
+	handler.CreateJob(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf(
+			"expected 201, got %d, body: %s",
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	var response struct {
+		ID uuid.UUID `json:"id"`
+	}
+
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response.ID == uuid.Nil {
+		t.Fatal("expected a non-zero job ID")
+	}
+
+	jobID = response.ID
+
+	// The job must not be immediately available to workers.
+	readyCount, err := redisClient.XLen(ctx, "jobs:ready").Result()
+	if err != nil {
+		t.Fatalf("failed to inspect ready stream: %v", err)
+	}
+
+	if readyCount != 0 {
+		t.Fatalf(
+			"expected future job not to be in ready stream, got %d messages",
+			readyCount,
+		)
+	}
+
+	// The job must exist in the scheduled sorted set.
+	score, err := redisClient.ZScore(
+		ctx,
+		"jobs:scheduled",
+		jobID.String(),
+	).Result()
+	if err != nil {
+		t.Fatalf("failed to inspect scheduled set: %v", err)
+	}
+
+	expectedScore := float64(runAt.Unix())
+
+	if score != expectedScore {
+		t.Fatalf(
+			"expected scheduled score %v, got %v",
+			expectedScore,
+			score,
+		)
 	}
 }
 
@@ -378,7 +502,7 @@ func TestGetJob(t *testing.T) {
 	})
 
 	jobRepo := repository.NewJobRepository(pool)
-	Handler := NewHandler(jobRepo)
+	Handler := NewHandler(jobRepo, nil)
 	var buf bytes.Buffer
 
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
@@ -481,7 +605,7 @@ func TestGetJob_NotFound(t *testing.T) {
 		pool.Close()
 	})
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo)
+	handler := NewHandler(jobRepo, nil)
 	var buf bytes.Buffer
 
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
@@ -533,7 +657,7 @@ func TestAPI_ErrorResponseShape(t *testing.T) {
 	})
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo)
+	handler := NewHandler(jobRepo, nil)
 
 	var buf bytes.Buffer
 
@@ -647,7 +771,7 @@ func TestListJobs_OversizedLimit(t *testing.T) {
 	})
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo)
+	handler := NewHandler(jobRepo, nil)
 	apiKey := createTestAPIKey(t, pool)
 
 	callbackURL := "https://example.com/callback"
@@ -741,7 +865,7 @@ func TestListJobs_StatusFilter(t *testing.T) {
 	})
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo)
+	handler := NewHandler(jobRepo, nil)
 	apiKey := createTestAPIKey(t, pool)
 
 	callbackURL := "https://example.com/callback"
@@ -864,7 +988,7 @@ func TestListJobs_Pagination(t *testing.T) {
 	})
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo)
+	handler := NewHandler(jobRepo, nil)
 	apiKey := createTestAPIKey(t, pool)
 
 	callbackURL := "https://example.com/callback"
@@ -987,7 +1111,7 @@ func TestDeleteJob(t *testing.T) {
 	pool := testDBPool(t)
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo)
+	handler := NewHandler(jobRepo, nil)
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
 	router := Server(slog.Default(), handler, limiter)
@@ -1092,7 +1216,7 @@ func TestDeleteJob(t *testing.T) {
 }
 
 func TestGetJob_InvalidID(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -1129,8 +1253,9 @@ func TestGetJob_InvalidID(t *testing.T) {
 		)
 	}
 }
+
 func TestListJobs_InvalidLimit(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -1167,8 +1292,9 @@ func TestListJobs_InvalidLimit(t *testing.T) {
 		)
 	}
 }
+
 func TestListJobs_InvalidOffset(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -1205,6 +1331,7 @@ func TestListJobs_InvalidOffset(t *testing.T) {
 		)
 	}
 }
+
 func TestListJobs_InvalidStatus(t *testing.T) {
 	pool := testDBPool(t)
 
@@ -1212,7 +1339,7 @@ func TestListJobs_InvalidStatus(t *testing.T) {
 		pool.Close()
 	})
 
-	handler := NewHandler(repository.NewJobRepository(pool))
+	handler := NewHandler(repository.NewJobRepository(pool), nil)
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -1249,8 +1376,9 @@ func TestListJobs_InvalidStatus(t *testing.T) {
 		)
 	}
 }
+
 func TestDeleteJob_InvalidID(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 
 	req := httptest.NewRequest(
 		http.MethodDelete,
@@ -1285,6 +1413,7 @@ func TestDeleteJob_InvalidID(t *testing.T) {
 		)
 	}
 }
+
 func TestDeleteJob_NotFound(t *testing.T) {
 	ctx := context.Background()
 
@@ -1300,7 +1429,7 @@ func TestDeleteJob_NotFound(t *testing.T) {
 	defer pool.Close()
 
 	repo := repository.NewJobRepository(pool)
-	handler := NewHandler(repo)
+	handler := NewHandler(repo, nil)
 
 	id := uuid.New()
 
@@ -1338,6 +1467,7 @@ func TestDeleteJob_NotFound(t *testing.T) {
 		)
 	}
 }
+
 func createTestAPIKey(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 

@@ -448,6 +448,13 @@ func TestJobRepository_ListByStatus(t *testing.T) {
 	pool := testDBPool(t)
 	repo := NewJobRepository(pool)
 
+	if _, err := pool.Exec(
+		context.Background(),
+		"DELETE FROM jobs",
+	); err != nil {
+		t.Fatalf("failed to clean jobs table: %v", err)
+	}
+
 	jobIDs := make([]uuid.UUID, 0, 15)
 
 	t.Cleanup(func() {
@@ -477,19 +484,63 @@ func TestJobRepository_ListByStatus(t *testing.T) {
 		jobIDs = append(jobIDs, jobID)
 	}
 
+	allJobs, err := repo.ListByStatus(
+		context.Background(),
+		StatusPending,
+		100,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("failed to list jobs: %v", err)
+	}
+
+	positions := make(map[uuid.UUID]int)
+
+	for i, job := range allJobs {
+		positions[job.ID] = i
+	}
+
+	for _, jobID := range jobIDs {
+		if _, ok := positions[jobID]; !ok {
+			t.Fatalf("test job %s was not returned", jobID)
+		}
+	}
+
+	firstPosition := positions[jobIDs[0]]
+
 	firstPage, err := repo.ListByStatus(
-		context.Background(), StatusPending, 10, 0,
+		context.Background(),
+		StatusPending,
+		10,
+		firstPosition,
 	)
 	if err != nil {
 		t.Fatalf("failed to list first page: %v", err)
 	}
+
 	if len(firstPage) != 10 {
 		t.Errorf("first page contains %d jobs, want 10", len(firstPage))
 	}
+
 	assertJobsHaveStatus(t, firstPage, StatusPending)
 
-	secondPage, err := repo.ListByStatus(context.Background(), StatusPending, 10, 10)
+	for i, job := range firstPage {
+		if job.ID != allJobs[firstPosition+i].ID {
+			t.Errorf(
+				"first page job %d is %s, want %s",
+				i,
+				job.ID,
+				allJobs[firstPosition+i].ID,
+			)
+		}
+	}
 
+	secondPage, err := repo.ListByStatus(
+		context.Background(),
+		StatusPending,
+		10,
+		firstPosition+10,
+	)
 	if err != nil {
 		t.Fatalf("failed to list second page: %v", err)
 	}
@@ -499,6 +550,17 @@ func TestJobRepository_ListByStatus(t *testing.T) {
 	}
 
 	assertJobsHaveStatus(t, secondPage, StatusPending)
+
+	for i, job := range secondPage {
+		if job.ID != allJobs[firstPosition+10+i].ID {
+			t.Errorf(
+				"second page job %d is %s, want %s",
+				i,
+				job.ID,
+				allJobs[firstPosition+10+i].ID,
+			)
+		}
+	}
 
 }
 

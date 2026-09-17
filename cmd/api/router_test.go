@@ -11,7 +11,7 @@ import (
 func TestServer_UnknownRouteReturns404(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
-	handler := NewHandler(nil)
+	handler := NewHandler(nil, nil)
 	router := Server(logger, handler, nil)
 
 	req, err := http.NewRequest(http.MethodGet, "/v1/testHttp404", nil)

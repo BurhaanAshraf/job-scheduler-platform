@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	ReadyStream   = "jobs:ready"
-	ConsumerGroup = "workers"
+	ReadyStream       = "jobs:ready"
+	ConsumerGroup     = "workers"
+	ScheduledSet      = "jobs:scheduled"
+	ScheduledPayloads = "jobs:scheduled:data"
 )
 
 type Message struct {
@@ -180,4 +182,21 @@ func Claim(ctx context.Context, client *redis.Client, consumerName string, minId
 	}
 
 	return messages, nil
+}
+
+func ScheduleJob(ctx context.Context, client *redis.Client, jobID string, payload []byte, runAt time.Time) error {
+	pipe := client.TxPipeline()
+
+	pipe.ZAdd(ctx, ScheduledSet, redis.Z{
+		Score:  float64(runAt.Unix()),
+		Member: jobID,
+	})
+
+	pipe.HSet(ctx, ScheduledPayloads, jobID, string(payload))
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("schedule job %q: %w", jobID, err)
+	}
+
+	return nil
 }

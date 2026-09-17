@@ -195,7 +195,7 @@ func (r *JobRepository) ListByStatus(ctx context.Context, status string, limit, 
 	query := `SELECT id , type , payload , status , run_at , attempts , max_attempts , idempotency_key , callback_url , last_error , created_at , updated_at
 	FROM jobs
 	WHERE status = $1
-	ORDER BY created_at ASC
+	ORDER BY created_at ASC, id ASC
 	LIMIT $2
 	OFFSET $3`
 

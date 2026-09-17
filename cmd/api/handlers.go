@@ -12,7 +12,9 @@ import (
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/api"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -31,11 +33,16 @@ type CreateJobRequest struct {
 
 type Handler struct {
 	jobRepo *repository.JobRepository
+	redis   *redis.Client
 }
 
-func NewHandler(jobRepo *repository.JobRepository) *Handler {
+func NewHandler(
+	jobRepo *repository.JobRepository,
+	redisClient *redis.Client,
+) *Handler {
 	return &Handler{
 		jobRepo: jobRepo,
+		redis:   redisClient,
 	}
 }
 
@@ -64,6 +71,39 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 	jobID, err := h.jobRepo.Create(r.Context(), input)
 
 	if err == nil {
+		if req.RunAt.After(time.Now().UTC()) {
+			if err := stream.ScheduleJob(
+				r.Context(),
+				h.redis,
+				jobID.String(),
+				req.Payload,
+				req.RunAt,
+			); err != nil {
+				api.WriteError(
+					w,
+					http.StatusInternalServerError,
+					"INTERNAL_SERVER_ERROR",
+					"failed to schedule job",
+				)
+				return
+			}
+		} else {
+			if _, err := stream.EnqueueDue(
+				r.Context(),
+				h.redis,
+				jobID.String(),
+				req.Payload,
+			); err != nil {
+				api.WriteError(
+					w,
+					http.StatusInternalServerError,
+					"INTERNAL_SERVER_ERROR",
+					"failed to enqueue job",
+				)
+				return
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 

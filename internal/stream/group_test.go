@@ -2,7 +2,7 @@ package stream
 
 import (
 	"context"
-	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -215,21 +215,7 @@ func TestAcknowledge_RemovesMessageFromPending(t *testing.T) {
 func TestListStalePending_ReturnsIdleMessages(t *testing.T) {
 	ctx := context.Background()
 
-	addr := os.Getenv("REDIS_ADDR")
-	if addr == "" {
-		t.Fatal("REDIS_ADDR is required")
-	}
-
-	client := redis.NewClient(&redis.Options{
-		Addr: addr,
-	})
-	t.Cleanup(func() {
-		client.Close()
-	})
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		t.Fatalf("failed to ping Redis: %v", err)
-	}
+	client := testRedisClient(t)
 
 	if err := client.Del(ctx, ReadyStream).Err(); err != nil {
 		t.Fatalf("failed to clean stream: %v", err)
@@ -310,6 +296,171 @@ func TestListStalePending_ReturnsIdleMessages(t *testing.T) {
 		t.Fatalf(
 			"delivery count = %d, want 1",
 			stale[0].DeliveryCount,
+		)
+	}
+}
+
+func TestScheduleJob_AddsJobToScheduledSet(t *testing.T) {
+	ctx := context.Background()
+	client := testRedisClient(t)
+
+	if err := client.Del(ctx, ScheduledSet, ScheduledPayloads, ReadyStream).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	jobID := uuid.NewString()
+	runAt := time.Now().UTC().Add(1 * time.Hour).Truncate(time.Second)
+
+	if err := ScheduleJob(
+		ctx,
+		client,
+		jobID,
+		[]byte(`{"message":"scheduled"}`),
+		runAt,
+	); err != nil {
+		t.Fatalf("ScheduleJob failed: %v", err)
+	}
+
+	scheduled, err := client.ZRangeWithScores(ctx, ScheduledSet, 0, -1).Result()
+	if err != nil {
+		t.Fatalf("failed to read scheduled jobs: %v", err)
+	}
+
+	if len(scheduled) != 1 {
+		t.Fatalf("expected 1 scheduled job, got %d", len(scheduled))
+	}
+
+	if scheduled[0].Member != jobID {
+		t.Fatalf(
+			"member = %v, want %s",
+			scheduled[0].Member,
+			jobID,
+		)
+	}
+
+	if scheduled[0].Score != float64(runAt.Unix()) {
+		t.Fatalf(
+			"score = %v, want %v",
+			scheduled[0].Score,
+			float64(runAt.Unix()),
+		)
+	}
+
+	ready, err := client.XRange(ctx, ReadyStream, "-", "+").Result()
+	if err != nil {
+		t.Fatalf("failed to read ready stream: %v", err)
+	}
+
+	if len(ready) != 0 {
+		t.Fatalf(
+			"expected future job not to be in ready stream, got %d messages",
+			len(ready),
+		)
+	}
+}
+func TestPromoteDue_ConcurrentCallsDoNotDuplicate(t *testing.T) {
+	ctx := context.Background()
+	client := testRedisClient(t)
+
+	if err := client.Del(
+		ctx,
+		ScheduledSet,
+		ScheduledPayloads,
+		ReadyStream,
+	).Err(); err != nil {
+		t.Fatalf("failed to clean Redis: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := client.Del(
+			ctx,
+			ScheduledSet,
+			ScheduledPayloads,
+			ReadyStream,
+		).Err(); err != nil {
+			t.Errorf("failed to clean Redis: %v", err)
+		}
+	})
+
+	jobID := uuid.NewString()
+	payload := []byte(`{"message":"concurrent"}`)
+
+	runAt := time.Now().UTC().Add(-1 * time.Second)
+
+	if err := ScheduleJob(
+		ctx,
+		client,
+		jobID,
+		payload,
+		runAt,
+	); err != nil {
+		t.Fatalf("ScheduleJob failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+
+	wg.Add(2)
+
+	for i := 0; i < 2; i++ {
+		go func() {
+			defer wg.Done()
+
+			_, err := PromoteDue(
+				ctx,
+				client,
+				time.Now().UTC(),
+			)
+			errs <- err
+		}()
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("PromoteDue failed: %v", err)
+		}
+	}
+
+	messages, err := client.XRange(
+		ctx,
+		ReadyStream,
+		"-",
+		"+",
+	).Result()
+	if err != nil {
+		t.Fatalf("failed to inspect ready stream: %v", err)
+	}
+
+	if len(messages) != 1 {
+		t.Fatalf(
+			"expected exactly 1 ready message, got %d",
+			len(messages),
+		)
+	}
+
+	if messages[0].Values["job_id"] != jobID {
+		t.Fatalf(
+			"job_id = %v, want %s",
+			messages[0].Values["job_id"],
+			jobID,
+		)
+	}
+
+	scheduledCount, err := client.ZCard(
+		ctx,
+		ScheduledSet,
+	).Result()
+	if err != nil {
+		t.Fatalf("failed to inspect scheduled set: %v", err)
+	}
+
+	if scheduledCount != 0 {
+		t.Fatalf(
+			"expected scheduled set to be empty, got %d",
+			scheduledCount,
 		)
 	}
 }

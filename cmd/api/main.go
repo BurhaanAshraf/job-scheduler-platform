@@ -35,15 +35,15 @@ func main() {
 
 	defer pool.Close()
 
-	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo)
-
 	redisClient, err := redisclient.New(startupCtx, cfg)
 	if err != nil {
 		log.Error("failed to connect to Redis", "error", err)
 		os.Exit(1)
 	}
 	defer redisClient.Close()
+
+	jobRepo := repository.NewJobRepository(pool)
+	handler := NewHandler(jobRepo, redisClient)
 
 	limiter := ratelimit.New(redisClient, 5, time.Minute)
 
