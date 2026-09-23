@@ -2,6 +2,7 @@ package stream
 
 import (
 	"context"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -70,7 +71,7 @@ func TestEnqueueDue_RoundTripsMessage(t *testing.T) {
 	jobID := "test-job-123"
 	payload := []byte(`{"type":"email","to":"test@example.com"}`)
 
-	messageID, err := EnqueueDue(ctx, client, jobID, payload)
+	messageID, err := EnqueueDue(ctx, client, jobID, payload, 1)
 	if err != nil {
 		t.Fatalf("EnqueueDue failed: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestReadNext_ConsumesMessageFromConsumerGroup(t *testing.T) {
 	jobID := "test-job-456"
 	payload := []byte(`{"type":"email","to":"worker@example.com"}`)
 
-	if _, err := EnqueueDue(ctx, client, jobID, payload); err != nil {
+	if _, err := EnqueueDue(ctx, client, jobID, payload, 1); err != nil {
 		t.Fatalf("EnqueueDue failed: %v", err)
 	}
 
@@ -164,7 +165,7 @@ func TestAcknowledge_RemovesMessageFromPending(t *testing.T) {
 	jobID := "ack-test-" + uuid.NewString()
 	payload := []byte(`{"message":"ack test"}`)
 
-	messageID, err := EnqueueDue(ctx, client, jobID, payload)
+	messageID, err := EnqueueDue(ctx, client, jobID, payload, 1)
 	if err != nil {
 		t.Fatalf("EnqueueDue failed: %v", err)
 	}
@@ -232,6 +233,7 @@ func TestListStalePending_ReturnsIdleMessages(t *testing.T) {
 		client,
 		jobID,
 		[]byte(`{"hello":"world"}`),
+		1,
 	)
 	if err != nil {
 		t.Fatalf("EnqueueDue failed: %v", err)
@@ -316,6 +318,7 @@ func TestScheduleJob_AddsJobToScheduledSet(t *testing.T) {
 		client,
 		jobID,
 		[]byte(`{"message":"scheduled"}`),
+		1,
 		runAt,
 	); err != nil {
 		t.Fatalf("ScheduleJob failed: %v", err)
@@ -392,6 +395,7 @@ func TestPromoteDue_ConcurrentCallsDoNotDuplicate(t *testing.T) {
 		client,
 		jobID,
 		payload,
+		1,
 		runAt,
 	); err != nil {
 		t.Fatalf("ScheduleJob failed: %v", err)
@@ -461,6 +465,70 @@ func TestPromoteDue_ConcurrentCallsDoNotDuplicate(t *testing.T) {
 		t.Fatalf(
 			"expected scheduled set to be empty, got %d",
 			scheduledCount,
+		)
+	}
+}
+
+func TestDeadLetter(t *testing.T) {
+	ctx := context.Background()
+
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		t.Fatal("REDIS_ADDR is required")
+	}
+
+	client := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	t.Cleanup(func() {
+		client.Close()
+	})
+
+	if err := client.Ping(ctx).Err(); err != nil {
+		t.Fatalf("failed to ping Redis: %v", err)
+	}
+
+	jobID := uuid.NewString()
+	payload := []byte(`{"type":"email","message":"dead"}`)
+
+	messageID, err := DeadLetter(ctx, client, jobID, payload)
+	if err != nil {
+		t.Fatalf("failed to dead-letter job: %v", err)
+	}
+
+	if messageID == "" {
+		t.Fatal("expected dead-letter stream message ID")
+	}
+
+	messages, err := client.XRange(
+		ctx,
+		DeadLetterStream,
+		messageID,
+		messageID,
+	).Result()
+	if err != nil {
+		t.Fatalf("failed to read dead-letter stream: %v", err)
+	}
+
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 dead-letter message, got %d", len(messages))
+	}
+
+	message := messages[0]
+
+	if message.Values["job_id"] != jobID {
+		t.Fatalf(
+			"expected job_id %q, got %v",
+			jobID,
+			message.Values["job_id"],
+		)
+	}
+
+	if message.Values["payload"] != string(payload) {
+		t.Fatalf(
+			"expected payload %q, got %v",
+			string(payload),
+			message.Values["payload"],
 		)
 	}
 }

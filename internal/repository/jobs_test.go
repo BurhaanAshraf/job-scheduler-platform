@@ -447,11 +447,15 @@ func TestJobRepository_UpdateStatus_DatabaseError(t *testing.T) {
 func TestJobRepository_ListByStatus(t *testing.T) {
 	pool := testDBPool(t)
 	repo := NewJobRepository(pool)
+	ctx := context.Background()
 
-	if _, err := pool.Exec(
-		context.Background(),
-		"DELETE FROM jobs",
-	); err != nil {
+	_, err := pool.Exec(ctx, `DELETE FROM job_executions`)
+	if err != nil {
+		t.Fatalf("failed to clean job executions table: %v", err)
+	}
+
+	_, err = pool.Exec(ctx, `DELETE FROM jobs`)
+	if err != nil {
 		t.Fatalf("failed to clean jobs table: %v", err)
 	}
 
@@ -609,5 +613,106 @@ func assertJobsHaveStatus(t *testing.T, jobs []Job, status string) {
 		if job.Status != status {
 			t.Errorf("job %s has status %q, want %q", job.ID, job.Status, status)
 		}
+	}
+}
+
+func TestJobRepository_IncrementAttempts(t *testing.T) {
+	ctx := context.Background()
+	pool := testDBPool(t)
+	repo := NewJobRepository(pool)
+
+	jobID, err := repo.Create(ctx, CreateJobInput{
+		Type:        "test",
+		Payload:     json.RawMessage(`{"message":"attempt-test"}`),
+		RunAt:       time.Now().UTC(),
+		MaxAttempts: 3,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	attempt, err := repo.IncrementAttempts(ctx, jobID)
+	if err != nil {
+		t.Fatalf("increment attempts: %v", err)
+	}
+
+	if attempt != 1 {
+		t.Fatalf("expected attempts=1, got %d", attempt)
+	}
+
+	attempt, err = repo.IncrementAttempts(ctx, jobID)
+	if err != nil {
+		t.Fatalf("increment attempts second time: %v", err)
+	}
+
+	if attempt != 2 {
+		t.Fatalf("expected attempts=2, got %d", attempt)
+	}
+}
+
+func TestJobRepository_StartExecution(t *testing.T) {
+	ctx := context.Background()
+	pool := testDBPool(t)
+	repo := NewJobRepository(pool)
+
+	jobID, err := repo.Create(ctx, CreateJobInput{
+		Type:           "test",
+		Payload:        json.RawMessage(`{"message":"start-execution-test"}`),
+		RunAt:          time.Now().UTC(),
+		MaxAttempts:    3,
+		IdempotencyKey: "start-execution-" + uuid.NewString(),
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, err := pool.Exec(
+			context.Background(),
+			"DELETE FROM jobs WHERE id = $1",
+			jobID,
+		)
+		if err != nil {
+			t.Errorf("failed to clean up test job: %v", err)
+		}
+	})
+
+	attempt, err := repo.StartExecution(ctx, jobID, 1)
+	if err != nil {
+		t.Fatalf("start execution: %v", err)
+	}
+
+	if attempt != 1 {
+		t.Fatalf("expected first attempt=1, got %d", attempt)
+	}
+
+	job, err := repo.GetByID(ctx, jobID)
+	if err != nil {
+		t.Fatalf("get job after start execution: %v", err)
+	}
+
+	if job.Status != StatusRunning {
+		t.Fatalf(
+			"expected status=%q, got %q",
+			StatusRunning,
+			job.Status,
+		)
+	}
+
+	if job.Attempts != 1 {
+		t.Fatalf("expected attempts=1, got %d", job.Attempts)
+	}
+
+	// A second worker must not be able to claim the same running job.
+	attempt, err = repo.StartExecution(ctx, jobID, 1)
+	if err != nil {
+		t.Fatalf("start execution second time: %v", err)
+	}
+
+	if attempt != 0 {
+		t.Fatalf(
+			"expected second claim to return 0, got %d",
+			attempt,
+		)
 	}
 }

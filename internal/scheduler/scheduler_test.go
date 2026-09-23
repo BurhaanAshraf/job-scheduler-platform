@@ -102,6 +102,7 @@ func TestPromoteDue_EnqueuesAndRemovesJob(t *testing.T) {
 		redisClient,
 		jobID.String(),
 		[]byte(`{"message":"due"}`),
+		1,
 		time.Now().UTC(),
 	); err != nil {
 		t.Fatalf("failed to schedule job: %v", err)
@@ -197,6 +198,7 @@ func TestRun_PromotesDueJobAutomatically(t *testing.T) {
 		redisClient,
 		jobID,
 		[]byte(`{"message":"future"}`),
+		1,
 		runAt,
 	); err != nil {
 		t.Fatalf("ScheduleJob failed: %v", err)

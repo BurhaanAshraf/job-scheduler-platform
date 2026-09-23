@@ -17,13 +17,15 @@ local job_ids = redis.call(
 )
 
 for _, job_id in ipairs(job_ids) do
-	local payload = redis.call(
+	local scheduled = redis.call(
 		"HGET",
 		KEYS[2],
 		job_id
 	)
 
-	if payload then
+	if scheduled then
+		local data = cjson.decode(scheduled)
+
 		redis.call(
 			"XADD",
 			KEYS[3],
@@ -31,12 +33,14 @@ for _, job_id in ipairs(job_ids) do
 			"job_id",
 			job_id,
 			"payload",
-			payload
+			data.payload,
+			"queue_generation",
+			tostring(data.queue_generation)
 		)
 
-		redis.call("ZREM",KEYS[1],job_id)
+		redis.call("ZREM", KEYS[1], job_id)
 
-		redis.call("HDEL",KEYS[2],job_id)
+		redis.call("HDEL", KEYS[2], job_id)
 	end
 end
 

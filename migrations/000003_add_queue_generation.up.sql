@@ -1,0 +1,2 @@
+ALTER TABLE jobs
+ADD COLUMN queue_generation BIGINT NOT NULL DEFAULT 1;

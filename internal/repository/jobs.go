@@ -57,18 +57,19 @@ type CreateJobInput struct {
 	CallbackURL    *string
 }
 type Job struct {
-	ID             uuid.UUID
-	Type           string
-	Payload        json.RawMessage
-	Status         string
-	RunAt          time.Time
-	Attempts       int
-	MaxAttempts    int
-	IdempotencyKey string
-	CallbackURL    *string
-	LastError      *string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID              uuid.UUID
+	Type            string
+	Payload         json.RawMessage
+	Status          string
+	RunAt           time.Time
+	Attempts        int
+	MaxAttempts     int
+	IdempotencyKey  string
+	CallbackURL     *string
+	LastError       *string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	QueueGeneration int64
 }
 
 func NewJobRepository(pool *pgxpool.Pool) *JobRepository {
@@ -129,7 +130,8 @@ func (r *JobRepository) GetByID(ctx context.Context, id uuid.UUID) (Job, error) 
     callback_url,
     last_error,
     created_at,
-    updated_at
+    updated_at,
+    queue_generation
 	FROM jobs
 	WHERE id = $1`
 
@@ -146,6 +148,7 @@ func (r *JobRepository) GetByID(ctx context.Context, id uuid.UUID) (Job, error) 
 		&job.LastError,
 		&job.CreatedAt,
 		&job.UpdatedAt,
+		&job.QueueGeneration,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -311,4 +314,144 @@ func (r *JobRepository) Cancel(ctx context.Context, id uuid.UUID) error {
 	}
 
 	return nil
+}
+
+func (r *JobRepository) IncrementAttempts(ctx context.Context, id uuid.UUID) (int, error) {
+	var attempts int
+
+	err := r.pool.QueryRow(
+		ctx,
+		`UPDATE jobs
+		 SET attempts = attempts + 1,
+		     updated_at = NOW()
+		 WHERE id = $1
+		 RETURNING attempts`,
+		id,
+	).Scan(&attempts)
+	if err != nil {
+		return 0, fmt.Errorf("increment attempts for job %s: %w", id, err)
+	}
+
+	return attempts, nil
+}
+
+func (r *JobRepository) StartExecution(ctx context.Context, id uuid.UUID, queueGeneration int64) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	var attempts int
+
+	err := r.pool.QueryRow(
+		ctx,
+		`UPDATE jobs
+		 SET status = $2,
+		     attempts = attempts + 1,
+		     updated_at = NOW()
+		 WHERE id = $1
+		   AND queue_generation = $3
+		   AND status IN ($4, $5)
+		 RETURNING attempts`,
+		id,
+		StatusRunning,
+		queueGeneration,
+		StatusPending,
+		StatusScheduled,
+	).Scan(&attempts)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+
+		return 0, fmt.Errorf("start job execution: %w", err)
+	}
+
+	return attempts, nil
+}
+
+func (r *JobRepository) Retry(ctx context.Context, id uuid.UUID) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	result, err := r.pool.Exec(
+		ctx,
+		`UPDATE jobs
+		 SET attempts = 0,
+		     status = $2,
+		     run_at = $3,
+		     last_error = NULL,
+		     queue_generation = queue_generation + 1,
+		     updated_at = $3
+		 WHERE id = $1
+		   AND status = $4`,
+		id,
+		StatusScheduled,
+		time.Now().UTC(),
+		StatusDead,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to retry job: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		var status string
+
+		err := r.pool.QueryRow(
+			ctx,
+			`SELECT status FROM jobs WHERE id = $1`,
+			id,
+		).Scan(&status)
+
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+
+		if err != nil {
+			return fmt.Errorf("failed to check job status: %w", err)
+		}
+
+		return fmt.Errorf("job cannot be retried from status %q", status)
+	}
+
+	return nil
+}
+
+func (r *JobRepository) ScheduleRetry(
+	ctx context.Context,
+	id uuid.UUID,
+	nextRunAt time.Time,
+	lastError *string,
+) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	var queueGeneration int64
+
+	err := r.pool.QueryRow(
+		ctx,
+		`UPDATE jobs
+		 SET status = $2,
+		     queue_generation = queue_generation + 1,
+		     run_at = $3,
+		     last_error = $4,
+		     updated_at = NOW()
+		 WHERE id = $1
+		   AND status = $5
+		 RETURNING queue_generation`,
+		id,
+		StatusScheduled,
+		nextRunAt,
+		lastError,
+		StatusRunning,
+	).Scan(&queueGeneration)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, ErrNotFound
+		}
+
+		return 0, fmt.Errorf("schedule retry: %w", err)
+	}
+
+	return queueGeneration, nil
 }
