@@ -16,5 +16,7 @@ func Server(log *slog.Logger, h *Handler, limiter *ratelimit.Limiter) http.Handl
 	mux.Handle("GET /v1/jobs/{id}", auth(rateLimit(http.HandlerFunc(h.GetJob))))
 	mux.Handle("GET /v1/jobs", auth(rateLimit(http.HandlerFunc(h.ListJobs))))
 	mux.Handle("DELETE /v1/jobs/{id}", auth(rateLimit(http.HandlerFunc(h.DeleteJob))))
+	mux.Handle("GET /v1/dead-letters", auth(rateLimit(http.HandlerFunc(h.ListDeadLetters))))
+	mux.Handle("POST /v1/jobs/{id}/retry", auth(rateLimit(http.HandlerFunc(h.RetryJob))))
 	return api.Recovery(log, api.Logging(log, mux))
 }

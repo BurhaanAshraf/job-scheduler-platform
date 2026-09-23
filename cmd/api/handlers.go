@@ -77,6 +77,7 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 				h.redis,
 				jobID.String(),
 				req.Payload,
+				1,
 				req.RunAt,
 			); err != nil {
 				api.WriteError(
@@ -93,6 +94,7 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 				h.redis,
 				jobID.String(),
 				req.Payload,
+				1,
 			); err != nil {
 				api.WriteError(
 					w,
@@ -289,4 +291,151 @@ func validateCreateJobRequest(req CreateJobRequest) error {
 	}
 
 	return nil
+}
+
+func (h *Handler) ListDeadLetters(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+
+	limit := defaultJobListLimit
+	if value := query.Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed <= 0 {
+			api.WriteError(
+				w,
+				http.StatusBadRequest,
+				"INVALID_REQUEST",
+				"limit must be a positive integer",
+			)
+			return
+		}
+
+		limit = parsed
+	}
+
+	if limit > maxJobListLimit {
+		limit = maxJobListLimit
+	}
+
+	offset := 0
+	if value := query.Get("offset"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			api.WriteError(
+				w,
+				http.StatusBadRequest,
+				"INVALID_REQUEST",
+				"offset must be a non-negative integer",
+			)
+			return
+		}
+
+		offset = parsed
+	}
+
+	jobs, err := h.jobRepo.ListByStatus(
+		r.Context(),
+		repository.StatusDead,
+		limit,
+		offset,
+	)
+	if err != nil {
+		api.WriteError(
+			w,
+			http.StatusInternalServerError,
+			"INTERNAL_SERVER_ERROR",
+			"failed to list dead-lettered jobs",
+		)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	_ = json.NewEncoder(w).Encode(jobs)
+}
+
+func (h *Handler) RetryJob(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("id"))
+	if err != nil {
+		api.WriteError(
+			w,
+			http.StatusBadRequest,
+			"INVALID_REQUEST",
+			"invalid job id",
+		)
+		return
+	}
+
+	job, err := h.jobRepo.GetByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			api.WriteError(
+				w,
+				http.StatusNotFound,
+				"NOT_FOUND",
+				"job not found",
+			)
+			return
+		}
+
+		api.WriteError(
+			w,
+			http.StatusInternalServerError,
+			"INTERNAL_SERVER_ERROR",
+			"failed to retrieve job",
+		)
+		return
+	}
+
+	if job.Status != repository.StatusDead {
+		api.WriteError(
+			w,
+			http.StatusConflict,
+			"CONFLICT",
+			"only dead jobs can be retried",
+		)
+		return
+	}
+
+	if err := h.jobRepo.Retry(r.Context(), id); err != nil {
+		api.WriteError(
+			w,
+			http.StatusInternalServerError,
+			"INTERNAL_SERVER_ERROR",
+			"failed to retry job",
+		)
+		return
+	}
+
+	job, err = h.jobRepo.GetByID(r.Context(), id)
+	if err != nil {
+		api.WriteError(
+			w,
+			http.StatusInternalServerError,
+			"INTERNAL_SERVER_ERROR",
+			"failed to retrieve retried job",
+		)
+		return
+	}
+
+	if _, err := stream.EnqueueDue(
+		r.Context(),
+		h.redis,
+		job.ID.String(),
+		job.Payload,
+		job.QueueGeneration,
+	); err != nil {
+		api.WriteError(
+			w,
+			http.StatusInternalServerError,
+			"INTERNAL_SERVER_ERROR",
+			"failed to enqueue retried job",
+		)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	_ = json.NewEncoder(w).Encode(job)
 }

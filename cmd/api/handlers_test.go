@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +19,11 @@ import (
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/api"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/config"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/db"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/executor"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/ratelimit"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/worker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -1490,4 +1494,414 @@ func createTestAPIKey(t *testing.T, pool *pgxpool.Pool) string {
 	}
 
 	return rawKey
+}
+
+func TestHandler_ListDeadLetters(t *testing.T) {
+	dsn := os.Getenv("JOB_SCHEDULER_DB_DSN")
+	if dsn == "" {
+		t.Fatal("JOB_SCHEDULER_DB_DSN is required")
+	}
+
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		t.Fatal("REDIS_ADDR is required")
+	}
+
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("failed to create database pool: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Close()
+	})
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("failed to ping database: %v", err)
+	}
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	t.Cleanup(func() {
+		redisClient.Close()
+	})
+
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		t.Fatalf("failed to ping Redis: %v", err)
+	}
+
+	jobRepo := repository.NewJobRepository(pool)
+
+	payload := json.RawMessage(`{"type":"email","message":"dead-letter-test"}`)
+	callbackURL := "http://example.com/callback"
+
+	jobID, err := jobRepo.Create(ctx, repository.CreateJobInput{
+		Type:           "email",
+		Payload:        payload,
+		RunAt:          time.Now().UTC(),
+		MaxAttempts:    3,
+		IdempotencyKey: "dead-letter-api-test-" + uuid.NewString(),
+		CallbackURL:    &callbackURL,
+	})
+	if err != nil {
+		t.Fatalf("failed to create job: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, err := pool.Exec(
+			context.Background(),
+			"DELETE FROM jobs WHERE id = $1",
+			jobID,
+		)
+		if err != nil {
+			t.Errorf("failed to clean up test job: %v", err)
+		}
+	})
+
+	lastError := "callback returned status 500"
+
+	if err := jobRepo.UpdateStatus(
+		ctx,
+		jobID,
+		repository.StatusDead,
+		&lastError,
+	); err != nil {
+		t.Fatalf("failed to mark job as dead: %v", err)
+	}
+
+	handler := NewHandler(jobRepo, redisClient)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/dead-letters",
+		nil,
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ListDeadLetters(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf(
+			"expected status %d, got %d",
+			http.StatusOK,
+			recorder.Code,
+		)
+	}
+
+	var jobs []repository.Job
+
+	if err := json.NewDecoder(recorder.Body).Decode(&jobs); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	var found bool
+
+	for _, job := range jobs {
+		if job.ID == jobID {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Fatalf(
+			"expected dead-lettered job %q in response",
+			jobID,
+		)
+	}
+}
+
+func TestHandler_RetryJob(t *testing.T) {
+	dsn := os.Getenv("JOB_SCHEDULER_DB_DSN")
+	if dsn == "" {
+		t.Fatal("JOB_SCHEDULER_DB_DSN is required")
+	}
+
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		t.Fatal("REDIS_ADDR is required")
+	}
+
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("failed to create database pool: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Close()
+	})
+
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("failed to ping database: %v", err)
+	}
+
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	t.Cleanup(func() {
+		redisClient.Close()
+	})
+
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		t.Fatalf("failed to ping Redis: %v", err)
+	}
+
+	if err := redisClient.Del(
+		ctx,
+		stream.ReadyStream,
+		stream.ScheduledSet,
+		stream.ScheduledPayloads,
+	).Err(); err != nil {
+		t.Fatalf("failed to clean Redis: %v", err)
+	}
+
+	if err := redisClient.XGroupCreateMkStream(
+		ctx,
+		stream.ReadyStream,
+		stream.ConsumerGroup,
+		"0",
+	).Err(); err != nil {
+		t.Fatalf("failed to create consumer group: %v", err)
+	}
+
+	payload := json.RawMessage(`{"type":"email","message":"retry-me"}`)
+
+	callbackCalled := make(chan struct{}, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+
+		callbackCalled <- struct{}{}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	callbackURL := server.URL
+
+	jobRepo := repository.NewJobRepository(pool)
+
+	jobID, err := jobRepo.Create(ctx, repository.CreateJobInput{
+		Type:           "email",
+		Payload:        payload,
+		RunAt:          time.Now().UTC().Add(-time.Minute),
+		MaxAttempts:    3,
+		IdempotencyKey: "retry-api-test-" + uuid.NewString(),
+		CallbackURL:    &callbackURL,
+	})
+	if err != nil {
+		t.Fatalf("failed to create job: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, err := pool.Exec(
+			context.Background(),
+			`DELETE FROM job_executions WHERE job_id = $1`,
+			jobID,
+		)
+		if err != nil {
+			t.Errorf("failed to clean up test job executions: %v", err)
+		}
+
+		_, err = pool.Exec(
+			context.Background(),
+			`DELETE FROM jobs WHERE id = $1`,
+			jobID,
+		)
+		if err != nil {
+			t.Errorf("failed to clean up test job: %v", err)
+		}
+	})
+
+	lastError := "callback returned status 500"
+
+	if err := jobRepo.UpdateStatus(
+		ctx,
+		jobID,
+		repository.StatusDead,
+		&lastError,
+	); err != nil {
+		t.Fatalf("failed to mark job dead: %v", err)
+	}
+
+	// Simulate the exhausted job having previously reached the maximum
+	// number of attempts.
+	_, err = pool.Exec(
+		ctx,
+		`UPDATE jobs
+		 SET attempts = 3
+		 WHERE id = $1`,
+		jobID,
+	)
+	if err != nil {
+		t.Fatalf("failed to set attempts: %v", err)
+	}
+
+	handler := NewHandler(jobRepo, redisClient)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/jobs/"+jobID.String()+"/retry",
+		nil,
+	)
+	req.SetPathValue("id", jobID.String())
+
+	recorder := httptest.NewRecorder()
+
+	beforeRetry := time.Now().UTC()
+
+	handler.RetryJob(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusOK,
+			recorder.Code,
+			recorder.Body.String(),
+		)
+	}
+
+	job, err := jobRepo.GetByID(ctx, jobID)
+	if err != nil {
+		t.Fatalf("failed to retrieve retried job: %v", err)
+	}
+
+	if job.Attempts != 0 {
+		t.Fatalf(
+			"expected attempts to reset to 0, got %d",
+			job.Attempts,
+		)
+	}
+
+	if job.Status != repository.StatusScheduled {
+		t.Fatalf(
+			"expected status %q, got %q",
+			repository.StatusScheduled,
+			job.Status,
+		)
+	}
+
+	if job.LastError != nil {
+		t.Fatalf(
+			"expected last_error to be cleared, got %q",
+			*job.LastError,
+		)
+	}
+
+	afterRetry := time.Now().UTC()
+
+	if job.RunAt.Before(beforeRetry) || job.RunAt.After(afterRetry) {
+		t.Fatalf(
+			"expected run_at to be approximately now, got %v",
+			job.RunAt,
+		)
+	}
+
+	messages, err := redisClient.XRange(
+		ctx,
+		stream.ReadyStream,
+		"-",
+		"+",
+	).Result()
+	if err != nil {
+		t.Fatalf("failed to inspect ready stream: %v", err)
+	}
+
+	var found bool
+
+	for _, message := range messages {
+		if message.Values["job_id"] != jobID.String() {
+			continue
+		}
+
+		found = true
+
+		expected := new(bytes.Buffer)
+		if err := json.Compact(expected, payload); err != nil {
+			t.Fatalf("failed to compact expected payload: %v", err)
+		}
+
+		actual := new(bytes.Buffer)
+		if err := json.Compact(
+			actual,
+			[]byte(message.Values["payload"].(string)),
+		); err != nil {
+			t.Fatalf("failed to compact actual payload: %v", err)
+		}
+
+		if !bytes.Equal(expected.Bytes(), actual.Bytes()) {
+			t.Fatalf(
+				"payload mismatch: expected %s, got %s",
+				expected.Bytes(),
+				actual.Bytes(),
+			)
+		}
+
+		break
+	}
+
+	if !found {
+		t.Fatalf(
+			"expected retried job %q to be re-enqueued",
+			jobID,
+		)
+	}
+	executionRepo := repository.NewJobExecutionRepository(pool)
+
+	processor := worker.NewProcessor(
+		jobRepo,
+		executionRepo,
+		redisClient,
+		executor.NewHTTPExecutor(),
+	)
+
+	retryMessages, err := stream.ReadNext(
+		ctx,
+		redisClient,
+		"retry-api-test-"+uuid.NewString(),
+	)
+	if err != nil {
+		t.Fatalf("failed to read retried job: %v", err)
+	}
+
+	if len(retryMessages) != 1 {
+		t.Fatalf(
+			"expected 1 retried message, got %d",
+			len(retryMessages),
+		)
+	}
+
+	if err := processor.Process(ctx, retryMessages[0]); err != nil {
+		t.Fatalf("failed to execute retried job: %v", err)
+	}
+
+	job, err = jobRepo.GetByID(ctx, jobID)
+	if err != nil {
+		t.Fatalf("failed to retrieve job after retry execution: %v", err)
+	}
+
+	if job.Attempts != 1 {
+		t.Fatalf(
+			"expected retried job to execute as attempt 1, got %d",
+			job.Attempts,
+		)
+	}
+
+	if job.Status != repository.StatusDone {
+		t.Fatalf(
+			"expected retried job status %q, got %q",
+			repository.StatusDone,
+			job.Status,
+		)
+	}
+
+	select {
+	case <-callbackCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retried job callback was not executed")
+	}
 }
