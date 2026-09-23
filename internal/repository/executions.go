@@ -39,3 +39,43 @@ func (r *JobExecutionRepository) Create(ctx context.Context, input CreateJobExec
 
 	return executionID, nil
 }
+
+func (r *JobExecutionRepository) Complete(
+	ctx context.Context,
+	id int64,
+	finishedAt time.Time,
+	status string,
+	executionErr *string,
+	responseCode *int,
+) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	query := `
+		UPDATE job_executions
+		SET finished_at = $2,
+		    status = $3,
+		    error = $4,
+		    response_code = $5
+		WHERE id = $1
+	`
+
+	result, err := r.pool.Exec(
+		ctx,
+		query,
+		id,
+		finishedAt,
+		status,
+		executionErr,
+		responseCode,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to complete job execution: %w", err)
+	}
+
+	if result.RowsAffected() != 1 {
+		return fmt.Errorf("job execution %d not found", id)
+	}
+
+	return nil
+}

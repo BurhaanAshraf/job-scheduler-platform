@@ -22,25 +22,32 @@ func NewHTTPExecutor() *HTTPExecutor {
 	}
 }
 
-func (e *HTTPExecutor) Execute(ctx context.Context, callbackURL string, payload []byte) error {
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, callbackURL, bytes.NewReader(payload))
+func (e *HTTPExecutor) Execute(ctx context.Context, callbackURL string, payload []byte) (int, error) {
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		callbackURL,
+		bytes.NewReader(payload),
+	)
 	if err != nil {
-		return fmt.Errorf("create callback request: %w", err)
+		return 0, fmt.Errorf("create callback request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := e.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("execute callback: %w", err)
+		return 0, fmt.Errorf("execute callback: %w", err)
 	}
 
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("callback returned status %d", resp.StatusCode)
+		return resp.StatusCode, fmt.Errorf(
+			"callback returned status %d",
+			resp.StatusCode,
+		)
 	}
 
-	return nil
+	return resp.StatusCode, nil
 }

@@ -43,9 +43,13 @@ func TestHTTPExecutor_ExecutesCallbackWithExactPayload(t *testing.T) {
 
 	executor := NewHTTPExecutor()
 
-	err := executor.Execute(context.Background(), server.URL, payload)
+	responseCode, err := executor.Execute(context.Background(), server.URL, payload)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if responseCode != http.StatusOK {
+		t.Fatalf("expected response code %d, got %d", http.StatusOK, responseCode)
 	}
 }
 
@@ -57,9 +61,21 @@ func TestHTTPExecutor_TreatsNon2xxAsFailure(t *testing.T) {
 
 	executor := NewHTTPExecutor()
 
-	err := executor.Execute(context.Background(), server.URL, []byte(`{"hello":"world"}`))
+	responseCode, err := executor.Execute(
+		context.Background(),
+		server.URL,
+		[]byte(`{"hello":"world"}`),
+	)
 
 	if err == nil {
-		t.Fatal("expected non-2xx response to return an error")
+		t.Fatal("expected Execute to fail")
+	}
+
+	if responseCode != http.StatusInternalServerError {
+		t.Fatalf(
+			"expected response code %d, got %d",
+			http.StatusInternalServerError,
+			responseCode,
+		)
 	}
 }
