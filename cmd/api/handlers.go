@@ -12,6 +12,7 @@ import (
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/api"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/scheduler"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -32,17 +33,29 @@ type CreateJobRequest struct {
 }
 
 type Handler struct {
-	jobRepo *repository.JobRepository
-	redis   *redis.Client
+	jobRepo  *repository.JobRepository
+	cronRepo *repository.CronJobRepository
+	redis    *redis.Client
+}
+
+type CreateCronJobRequest struct {
+	CronExpression string          `json:"cron_expression"`
+	JobTemplate    json.RawMessage `json:"job_template"`
+}
+
+type UpdateCronJobRequest struct {
+	Enabled *bool `json:"enabled"`
 }
 
 func NewHandler(
 	jobRepo *repository.JobRepository,
+	cronRepo *repository.CronJobRepository,
 	redisClient *redis.Client,
 ) *Handler {
 	return &Handler{
-		jobRepo: jobRepo,
-		redis:   redisClient,
+		jobRepo:  jobRepo,
+		cronRepo: cronRepo,
+		redis:    redisClient,
 	}
 }
 
@@ -438,4 +451,148 @@ func (h *Handler) RetryJob(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	_ = json.NewEncoder(w).Encode(job)
+}
+
+func (h *Handler) CreateCronJob(w http.ResponseWriter, r *http.Request) {
+	var req CreateCronJobRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.WriteError(
+			w,
+			http.StatusBadRequest,
+			"invalid_json",
+			"invalid JSON body",
+		)
+		return
+	}
+
+	if strings.TrimSpace(req.CronExpression) == "" {
+		api.WriteError(
+			w,
+			http.StatusBadRequest,
+			"invalid_cron_expression",
+			"cron_expression is required",
+		)
+		return
+	}
+
+	if len(req.JobTemplate) == 0 || string(req.JobTemplate) == "null" {
+		api.WriteError(
+			w,
+			http.StatusBadRequest,
+			"invalid_job_template",
+			"job_template is required",
+		)
+		return
+	}
+
+	if !json.Valid(req.JobTemplate) {
+		api.WriteError(
+			w,
+			http.StatusBadRequest,
+			"invalid_job_template",
+			"job_template must be valid JSON",
+		)
+		return
+	}
+
+	now := time.Now().UTC()
+
+	nextRunAt, err := scheduler.NextRunAt(req.CronExpression, now)
+	if err != nil {
+		api.WriteError(
+			w,
+			http.StatusBadRequest,
+			"invalid_cron_expression",
+			err.Error(),
+		)
+		return
+	}
+
+	cronJob, err := h.cronRepo.Create(
+		r.Context(),
+		repository.CreateCronJobInput{
+			CronExpression: req.CronExpression,
+			JobTemplate:    req.JobTemplate,
+			NextRunAt:      nextRunAt,
+			Enabled:        true,
+		},
+	)
+	if err != nil {
+		api.WriteError(
+			w,
+			http.StatusInternalServerError,
+			"cron_job_creation_failed",
+			"failed to create cron job",
+		)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+
+	_ = json.NewEncoder(w).Encode(map[string]int64{
+		"id": cronJob.ID,
+	})
+}
+
+func (h *Handler) UpdateCronJob(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		api.WriteError(
+			w,
+			http.StatusBadRequest,
+			"invalid_cron_job_id",
+			"invalid cron job id",
+		)
+		return
+	}
+
+	var req UpdateCronJobRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		api.WriteError(
+			w,
+			http.StatusBadRequest,
+			"invalid_json",
+			"invalid JSON body",
+		)
+		return
+	}
+
+	if req.Enabled == nil {
+		api.WriteError(
+			w,
+			http.StatusBadRequest,
+			"invalid_enabled",
+			"enabled is required",
+		)
+		return
+	}
+
+	if err := h.cronRepo.UpdateEnabled(
+		r.Context(),
+		id,
+		*req.Enabled,
+	); err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			api.WriteError(
+				w,
+				http.StatusNotFound,
+				"cron_job_not_found",
+				"cron job not found",
+			)
+			return
+		}
+
+		api.WriteError(
+			w,
+			http.StatusInternalServerError,
+			"cron_job_update_failed",
+			"failed to update cron job",
+		)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

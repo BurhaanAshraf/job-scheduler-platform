@@ -43,7 +43,9 @@ func main() {
 	defer redisClient.Close()
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo, redisClient)
+	cronRepo := repository.NewCronJobRepository(pool)
+
+	handler := NewHandler(jobRepo, cronRepo, redisClient)
 
 	limiter := ratelimit.New(redisClient, 5, time.Minute)
 
