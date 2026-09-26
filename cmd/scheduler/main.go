@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/config"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/db"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/logger"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/redisclient"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/scheduler"
 )
 
@@ -39,7 +41,39 @@ func main() {
 	}
 	defer redisClient.Close()
 
-	s := scheduler.New(redisClient, cfg.PollInterval)
+	pool, err := db.NewPool(startupCtx, cfg)
+	if err != nil {
+		log.Error("failed to connect to Postgres", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+
+	cronRepo := repository.NewCronJobRepository(pool)
+
+	instanceID := os.Getenv("SCHEDULER_INSTANCE_ID")
+
+	if instanceID == "" {
+		instanceID, err = os.Hostname()
+		if err != nil {
+			log.Error("failed to determine scheduler instance id", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	leaderLock := scheduler.NewLeaderLock(
+		redisClient,
+		"scheduler:leader",
+		instanceID,
+		10*time.Second,
+	)
+
+	s := scheduler.New(
+		redisClient,
+		cronRepo,
+		cfg.PollInterval,
+		leaderLock,
+		log,
+	)
 
 	log.Info("scheduler started")
 
