@@ -78,7 +78,7 @@ func TestCreateJob(t *testing.T) {
 	cronRepo := repository.NewCronJobRepository(pool)
 
 	redisClient := testRateLimitRedis(t)
-	handler := NewHandler(jobRepo, cronRepo, redisClient)
+	handler := NewHandler(jobRepo, cronRepo, redisClient, slog.Default())
 
 	idempotencyKey := uuid.New().String()
 
@@ -185,7 +185,7 @@ func TestCreateJob(t *testing.T) {
 }
 
 func TestCreateJob_InvalidJSON(t *testing.T) {
-	handler := NewHandler(nil, nil, nil)
+	handler := NewHandler(nil, nil, nil, slog.Default())
 
 	body := `{"type": "email",`
 
@@ -203,7 +203,7 @@ func TestCreateJob_InvalidJSON(t *testing.T) {
 }
 
 func TestCreateJob_MissingType(t *testing.T) {
-	handler := NewHandler(nil, nil, nil)
+	handler := NewHandler(nil, nil, nil, slog.Default())
 	body := `{
 		"payload": {"to": "test@example.com"},
 		"run_at": "2026-09-07T12:00:00Z",
@@ -225,7 +225,7 @@ func TestCreateJob_MissingType(t *testing.T) {
 }
 
 func TestCreateJob_InvalidPayload(t *testing.T) {
-	handler := NewHandler(nil, nil, nil)
+	handler := NewHandler(nil, nil, nil, slog.Default())
 
 	body := `{
 		"type": "email",
@@ -253,7 +253,7 @@ func TestCreateJob_InvalidPayload(t *testing.T) {
 }
 
 func TestCreateJob_InvalidMaxAttempts(t *testing.T) {
-	handler := NewHandler(nil, nil, nil)
+	handler := NewHandler(nil, nil, nil, slog.Default())
 
 	body := `{
 		"type": "email",
@@ -281,7 +281,7 @@ func TestCreateJob_InvalidMaxAttempts(t *testing.T) {
 }
 
 func TestCreateJob_MissingIdempotencyKey(t *testing.T) {
-	handler := NewHandler(nil, nil, nil)
+	handler := NewHandler(nil, nil, nil, slog.Default())
 
 	body := `{
 		"type": "email",
@@ -308,7 +308,7 @@ func TestCreateJob_MissingIdempotencyKey(t *testing.T) {
 }
 
 func TestCreateJob_MissingCallbackURL(t *testing.T) {
-	handler := NewHandler(nil, nil, nil)
+	handler := NewHandler(nil, nil, nil, slog.Default())
 
 	body := `{
 		"type": "email",
@@ -337,7 +337,7 @@ func TestCreateJob_MissingCallbackURL(t *testing.T) {
 }
 
 func TestCreateJob_InvalidCallbackURL(t *testing.T) {
-	handler := NewHandler(nil, nil, nil)
+	handler := NewHandler(nil, nil, nil, slog.Default())
 
 	body := `{
 		"type": "email",
@@ -369,7 +369,7 @@ func TestCreateJob_FutureJobIsScheduled(t *testing.T) {
 	jobRepo := repository.NewJobRepository(pool)
 	cronRepo := repository.NewCronJobRepository(pool)
 
-	handler := NewHandler(jobRepo, cronRepo, redisClient)
+	handler := NewHandler(jobRepo, cronRepo, redisClient, slog.Default())
 
 	jobID := uuid.Nil
 	idempotencyKey := uuid.New().String()
@@ -511,7 +511,7 @@ func TestGetJob(t *testing.T) {
 
 	jobRepo := repository.NewJobRepository(pool)
 
-	Handler := NewHandler(jobRepo, nil, nil)
+	Handler := NewHandler(jobRepo, nil, nil, slog.Default())
 	var buf bytes.Buffer
 
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
@@ -519,7 +519,7 @@ func TestGetJob(t *testing.T) {
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
 
-	router := Server(logger, Handler, limiter)
+	router := Server(logger, Handler, nil, limiter)
 	apiKey := createTestAPIKey(t, pool)
 
 	idempotencyKey := "get-job-" + uuid.NewString()
@@ -615,14 +615,14 @@ func TestGetJob_NotFound(t *testing.T) {
 	})
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo, nil, nil)
+	handler := NewHandler(jobRepo, nil, nil, slog.Default())
 	var buf bytes.Buffer
 
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
 
-	router := Server(logger, handler, limiter)
+	router := Server(logger, handler, nil, limiter)
 	apiKey := createTestAPIKey(t, pool)
 
 	id := uuid.New()
@@ -668,7 +668,7 @@ func TestAPI_ErrorResponseShape(t *testing.T) {
 
 	jobRepo := repository.NewJobRepository(pool)
 
-	handler := NewHandler(jobRepo, nil, nil)
+	handler := NewHandler(jobRepo, nil, nil, slog.Default())
 
 	var buf bytes.Buffer
 
@@ -676,7 +676,7 @@ func TestAPI_ErrorResponseShape(t *testing.T) {
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
 
-	router := Server(logger, handler, limiter)
+	router := Server(logger, handler, nil, limiter)
 	apiKey := createTestAPIKey(t, pool)
 
 	postReq := httptest.NewRequest(
@@ -782,7 +782,7 @@ func TestListJobs_OversizedLimit(t *testing.T) {
 	})
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo, nil, nil)
+	handler := NewHandler(jobRepo, nil, nil, slog.Default())
 	apiKey := createTestAPIKey(t, pool)
 
 	callbackURL := "https://example.com/callback"
@@ -810,7 +810,7 @@ func TestListJobs_OversizedLimit(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
-	router := Server(logger, handler, limiter)
+	router := Server(logger, handler, nil, limiter)
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -876,7 +876,7 @@ func TestListJobs_StatusFilter(t *testing.T) {
 	})
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo, nil, nil)
+	handler := NewHandler(jobRepo, nil, nil, slog.Default())
 	apiKey := createTestAPIKey(t, pool)
 
 	callbackURL := "https://example.com/callback"
@@ -918,7 +918,7 @@ func TestListJobs_StatusFilter(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
-	router := Server(logger, handler, limiter)
+	router := Server(logger, handler, nil, limiter)
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -999,7 +999,7 @@ func TestListJobs_Pagination(t *testing.T) {
 	})
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo, nil, nil)
+	handler := NewHandler(jobRepo, nil, nil, slog.Default())
 	apiKey := createTestAPIKey(t, pool)
 
 	callbackURL := "https://example.com/callback"
@@ -1028,7 +1028,7 @@ func TestListJobs_Pagination(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
-	router := Server(logger, handler, limiter)
+	router := Server(logger, handler, nil, limiter)
 
 	// Fetch the ordered result set.
 	req := httptest.NewRequest(
@@ -1122,10 +1122,10 @@ func TestDeleteJob(t *testing.T) {
 	pool := testDBPool(t)
 
 	jobRepo := repository.NewJobRepository(pool)
-	handler := NewHandler(jobRepo, nil, nil)
+	handler := NewHandler(jobRepo, nil, nil, slog.Default())
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
-	router := Server(slog.Default(), handler, limiter)
+	router := Server(slog.Default(), handler, nil, limiter)
 	apiKey := createTestAPIKey(t, pool)
 
 	var pendingJobID uuid.UUID
@@ -1227,7 +1227,7 @@ func TestDeleteJob(t *testing.T) {
 }
 
 func TestGetJob_InvalidID(t *testing.T) {
-	handler := NewHandler(nil, nil, nil)
+	handler := NewHandler(nil, nil, nil, slog.Default())
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -1266,7 +1266,7 @@ func TestGetJob_InvalidID(t *testing.T) {
 }
 
 func TestListJobs_InvalidLimit(t *testing.T) {
-	handler := NewHandler(nil, nil, nil)
+	handler := NewHandler(nil, nil, nil, slog.Default())
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -1305,7 +1305,7 @@ func TestListJobs_InvalidLimit(t *testing.T) {
 }
 
 func TestListJobs_InvalidOffset(t *testing.T) {
-	handler := NewHandler(nil, nil, nil)
+	handler := NewHandler(nil, nil, nil, slog.Default())
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -1350,7 +1350,7 @@ func TestListJobs_InvalidStatus(t *testing.T) {
 		pool.Close()
 	})
 
-	handler := NewHandler(repository.NewJobRepository(pool), nil, nil)
+	handler := NewHandler(repository.NewJobRepository(pool), nil, nil, slog.Default())
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -1389,7 +1389,7 @@ func TestListJobs_InvalidStatus(t *testing.T) {
 }
 
 func TestDeleteJob_InvalidID(t *testing.T) {
-	handler := NewHandler(nil, nil, nil)
+	handler := NewHandler(nil, nil, nil, slog.Default())
 
 	req := httptest.NewRequest(
 		http.MethodDelete,
@@ -1440,7 +1440,7 @@ func TestDeleteJob_NotFound(t *testing.T) {
 	defer pool.Close()
 
 	repo := repository.NewJobRepository(pool)
-	handler := NewHandler(repo, nil, nil)
+	handler := NewHandler(repo, nil, nil, slog.Default())
 
 	id := uuid.New()
 
@@ -1579,7 +1579,7 @@ func TestHandler_ListDeadLetters(t *testing.T) {
 	}
 	cronRepo := repository.NewCronJobRepository(pool)
 
-	handler := NewHandler(jobRepo, cronRepo, redisClient)
+	handler := NewHandler(jobRepo, cronRepo, redisClient, slog.Default())
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -1750,7 +1750,7 @@ func TestHandler_RetryJob(t *testing.T) {
 	}
 	cronRepo := repository.NewCronJobRepository(pool)
 
-	handler := NewHandler(jobRepo, cronRepo, redisClient)
+	handler := NewHandler(jobRepo, cronRepo, redisClient, slog.Default())
 
 	req := httptest.NewRequest(
 		http.MethodPost,

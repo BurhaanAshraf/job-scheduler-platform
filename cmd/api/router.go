@@ -6,12 +6,16 @@ import (
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/api"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/ratelimit"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func Server(log *slog.Logger, h *Handler, limiter *ratelimit.Limiter) http.Handler {
+func Server(log *slog.Logger, h *Handler, healthHandler *HealthHandler, limiter *ratelimit.Limiter) http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("GET /healthz", http.HandlerFunc(healthHandler.Healthz))
+	mux.Handle("GET /metrics", promhttp.Handler())
 	auth := api.APIKeyAuth(h.jobRepo)
 	rateLimit := api.RateLimit(limiter)
+
 	mux.Handle("POST /v1/jobs", auth(rateLimit(http.HandlerFunc(h.CreateJob))))
 	mux.Handle("GET /v1/jobs/{id}", auth(rateLimit(http.HandlerFunc(h.GetJob))))
 	mux.Handle("GET /v1/jobs", auth(rateLimit(http.HandlerFunc(h.ListJobs))))
