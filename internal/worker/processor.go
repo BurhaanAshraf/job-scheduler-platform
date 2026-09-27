@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/executor"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/metrics"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/retry"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
@@ -21,7 +22,12 @@ type Processor struct {
 	executor      *executor.HTTPExecutor
 }
 
-func NewProcessor(jobRepo *repository.JobRepository, executionRepo *repository.JobExecutionRepository, redisClient *redis.Client, httpExecutor *executor.HTTPExecutor) *Processor {
+func NewProcessor(
+	jobRepo *repository.JobRepository,
+	executionRepo *repository.JobExecutionRepository,
+	redisClient *redis.Client,
+	httpExecutor *executor.HTTPExecutor,
+) *Processor {
 	return &Processor{
 		jobRepo:       jobRepo,
 		executionRepo: executionRepo,
@@ -49,7 +55,7 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 		ctx,
 		job.ID,
 		message.QueueGeneration,
-	)	
+	)
 	if err != nil {
 		return fmt.Errorf("start execution for job %s: %w", job.ID, err)
 	}
@@ -75,12 +81,15 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 		return nil
 	}
 
-	executionID, err := p.executionRepo.Create(ctx, repository.CreateJobExecutionInput{
-		JobID:         job.ID,
-		AttemptNumber: attempt,
-		StartedAt:     time.Now().UTC(),
-		Status:        "running",
-	})
+	executionID, err := p.executionRepo.Create(
+		ctx,
+		repository.CreateJobExecutionInput{
+			JobID:         job.ID,
+			AttemptNumber: attempt,
+			StartedAt:     time.Now().UTC(),
+			Status:        "running",
+		},
+	)
 	if err != nil {
 		return fmt.Errorf("create execution for job %q: %w", message.JobID, err)
 	}
@@ -115,6 +124,14 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 				err,
 			)
 		}
+
+		// Metrics are observability only. A metrics failure must not
+		// change the outcome of the job execution.
+		_ = metrics.Increment(
+			ctx,
+			p.redis,
+			metrics.JobsFailedKey,
+		)
 	} else {
 		if err := p.executionRepo.Complete(
 			ctx,
@@ -166,7 +183,11 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 				)
 			}
 
-			ackCount, err := stream.Acknowledge(ctx, p.redis, message.ID)
+			ackCount, err := stream.Acknowledge(
+				ctx,
+				p.redis,
+				message.ID,
+			)
 			if err != nil {
 				return fmt.Errorf(
 					"acknowledge failed job %q after scheduling retry: %w",
@@ -216,7 +237,11 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 			)
 		}
 
-		ackCount, err := stream.Acknowledge(ctx, p.redis, message.ID)
+		ackCount, err := stream.Acknowledge(
+			ctx,
+			p.redis,
+			message.ID,
+		)
 		if err != nil {
 			return fmt.Errorf(
 				"acknowledge dead-lettered job %q: %w",
@@ -240,13 +265,38 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 		)
 	}
 
-	if err := p.jobRepo.UpdateStatus(ctx, job.ID, repository.StatusDone, nil); err != nil {
-		return fmt.Errorf("mark job %q as done: %w", message.JobID, err)
+	if err := p.jobRepo.UpdateStatus(
+		ctx,
+		job.ID,
+		repository.StatusDone,
+		nil,
+	); err != nil {
+		return fmt.Errorf(
+			"mark job %q as done: %w",
+			message.JobID,
+			err,
+		)
 	}
 
-	ackCount, err := stream.Acknowledge(ctx, p.redis, message.ID)
+	// Only count the job as completed after its durable DB status
+	// has successfully been changed to done.
+	_ = metrics.Increment(
+		ctx,
+		p.redis,
+		metrics.JobsCompletedKey,
+	)
+
+	ackCount, err := stream.Acknowledge(
+		ctx,
+		p.redis,
+		message.ID,
+	)
 	if err != nil {
-		return fmt.Errorf("acknowledge job %q: %w", message.JobID, err)
+		return fmt.Errorf(
+			"acknowledge job %q: %w",
+			message.JobID,
+			err,
+		)
 	}
 
 	if ackCount != 1 {

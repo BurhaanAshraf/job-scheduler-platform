@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/api"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/metrics"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/scheduler"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
@@ -36,6 +38,7 @@ type Handler struct {
 	jobRepo  *repository.JobRepository
 	cronRepo *repository.CronJobRepository
 	redis    *redis.Client
+	logger   *slog.Logger
 }
 
 type CreateCronJobRequest struct {
@@ -51,11 +54,13 @@ func NewHandler(
 	jobRepo *repository.JobRepository,
 	cronRepo *repository.CronJobRepository,
 	redisClient *redis.Client,
+	logger *slog.Logger,
 ) *Handler {
 	return &Handler{
 		jobRepo:  jobRepo,
 		cronRepo: cronRepo,
 		redis:    redisClient,
+		logger:   logger,
 	}
 }
 
@@ -82,6 +87,27 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jobID, err := h.jobRepo.Create(r.Context(), input)
+
+	if err == nil {
+		if err := metrics.Increment(
+			r.Context(),
+			h.redis,
+			metrics.JobsSubmittedKey,
+		); err != nil {
+			h.logger.ErrorContext(
+				r.Context(),
+				"failed to update submitted jobs metric",
+				"job_id", jobID,
+				"error", err,
+			)
+		}
+
+		h.logger.InfoContext(
+			r.Context(),
+			"job submitted",
+			"job_id", jobID,
+		)
+	}
 
 	if err == nil {
 		if req.RunAt.After(time.Now().UTC()) {

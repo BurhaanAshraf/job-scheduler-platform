@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
@@ -137,8 +138,27 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 			now := time.Now().UTC()
 
+			dueJobIDs, err := s.redis.ZRangeByScore(
+				ctx,
+				stream.ScheduledSet,
+				&redis.ZRangeBy{
+					Min: "-inf",
+					Max: strconv.FormatInt(now.Unix(), 10),
+				},
+			).Result()
+			if err != nil {
+				return fmt.Errorf("list due jobs: %w", err)
+			}
+
 			if _, err := s.PromoteDue(ctx, now); err != nil {
 				return fmt.Errorf("promote due jobs: %w", err)
+			}
+
+			for _, jobID := range dueJobIDs {
+				s.log.Info(
+					"job promoted",
+					"job_id", jobID,
+				)
 			}
 
 			if _, err := s.TickCronJobs(ctx, now); err != nil {
@@ -175,6 +195,11 @@ func (s *Scheduler) TickCronJobs(ctx context.Context, now time.Time,
 		if !ok {
 			continue
 		}
+		s.log.Info(
+			"cron job promoted",
+			"job_id", instance.ID,
+			"cron_job_id", cronJob.ID,
+		)
 
 		_, err = stream.EnqueueDue(
 			ctx,
