@@ -18,12 +18,15 @@ import (
 )
 
 func main() {
+	log := logger.New("worker")
+
 	cfg, err := config.Load()
 	if err != nil {
+		log.Error("something wrong with config", "err", err)
 		panic(err)
 	}
 
-	log := logger.New("worker")
+	config.LogSnapshot(log, cfg)
 
 	ctx, stop := signal.NotifyContext(
 		context.Background(),

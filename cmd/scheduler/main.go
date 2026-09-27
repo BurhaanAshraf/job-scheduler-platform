@@ -17,12 +17,15 @@ import (
 )
 
 func main() {
+	log := logger.New("scheduler")
+
 	cfg, err := config.Load()
 	if err != nil {
+		log.Error("something wrong with config", "err", err)
 		panic(err)
 	}
 
-	log := logger.New("scheduler")
+	config.LogSnapshot(log, cfg)
 
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
