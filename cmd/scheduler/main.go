@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -14,16 +15,26 @@ import (
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/redisclient"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/scheduler"
+	"github.com/google/uuid"
 )
 
 func main() {
-	log := logger.New("scheduler")
-
-	cfg, err := config.Load()
-	if err != nil {
-		log.Error("something wrong with config", "err", err)
-		panic(err)
+	for _, a := range os.Args[1:] {
+		if a == "-healthcheck" || a == "--healthcheck" {
+			os.Exit(runHealthcheck())
+		}
 	}
+	os.Exit(run())
+}
+
+func run() int {
+	cfg, err := config.Load()
+	bootstrap := logger.New("scheduler")
+	if err != nil {
+		bootstrap.Error("invalid configuration", "err", err)
+		return 1
+	}
+	log := logger.NewWithLevel("scheduler", logger.ParseLevel(cfg.LogLevel))
 
 	config.LogSnapshot(log, cfg)
 
@@ -34,20 +45,20 @@ func main() {
 	)
 	defer stop()
 
-	startupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	startupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	redisClient, err := redisclient.New(startupCtx, cfg)
 	if err != nil {
 		log.Error("failed to connect to Redis", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer redisClient.Close()
 
 	pool, err := db.NewPool(startupCtx, cfg)
 	if err != nil {
 		log.Error("failed to connect to Postgres", "error", err)
-		os.Exit(1)
+		return 1
 	}
 	defer pool.Close()
 
@@ -56,18 +67,18 @@ func main() {
 	instanceID := os.Getenv("SCHEDULER_INSTANCE_ID")
 
 	if instanceID == "" {
-		instanceID, err = os.Hostname()
-		if err != nil {
-			log.Error("failed to determine scheduler instance id", "error", err)
-			os.Exit(1)
+		hostname, herr := os.Hostname()
+		if herr != nil || hostname == "" {
+			hostname = "scheduler"
 		}
+		instanceID = fmt.Sprintf("%s-%s", hostname, uuid.NewString()[:8])
 	}
 
 	leaderLock := scheduler.NewLeaderLock(
 		redisClient,
 		"scheduler:leader",
 		instanceID,
-		10*time.Second,
+		30*time.Second,
 	)
 
 	s := scheduler.New(
@@ -78,12 +89,13 @@ func main() {
 		log,
 	)
 
-	log.Info("scheduler started")
+	log.Info("scheduler started", "instance_id", instanceID)
 
 	if err := s.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Error("scheduler stopped", "error", err)
-		os.Exit(1)
+		return 1
 	}
 
 	log.Info("scheduler stopped")
+	return 0
 }
