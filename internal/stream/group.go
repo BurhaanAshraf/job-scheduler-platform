@@ -55,6 +55,8 @@ func EnqueueDue(
 ) (string, error) {
 	id, err := client.XAdd(ctx, &redis.XAddArgs{
 		Stream: ReadyStream,
+		MaxLen: 100000,
+		Approx: true,
 		ID:     "*",
 		Values: map[string]any{
 			"job_id":           jobID,
@@ -72,6 +74,8 @@ func EnqueueDue(
 func DeadLetter(ctx context.Context, client *redis.Client, jobID string, payload []byte) (string, error) {
 	id, err := client.XAdd(ctx, &redis.XAddArgs{
 		Stream: DeadLetterStream,
+		MaxLen: 100000,
+		Approx: true,
 		ID:     "*",
 		Values: map[string]any{
 			"job_id":  jobID,
@@ -85,13 +89,58 @@ func DeadLetter(ctx context.Context, client *redis.Client, jobID string, payload
 	return id, nil
 }
 
-func ReadNext(ctx context.Context, client *redis.Client, consumerName string) ([]Message, error) {
+// RemoveScheduled removes a job from the delayed queue. Best-effort:
+// missing members are not errors. Used on cancel so a cancelled job
+// is never promoted after the DB status flips.
+func RemoveScheduled(ctx context.Context, client *redis.Client, jobID string) error {
+	pipe := client.TxPipeline()
+	pipe.ZRem(ctx, ScheduledSet, jobID)
+	pipe.HDel(ctx, ScheduledPayloads, jobID)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("remove scheduled job %q: %w", jobID, err)
+	}
+	return nil
+}
+
+func parseQueueGeneration(raw any) int64 {
+	switch v := raw.(type) {
+	case string:
+		if v == "" {
+			return 1
+		}
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 1
+		}
+		if n <= 0 {
+			return 1
+		}
+		return n
+	case int64:
+		if v <= 0 {
+			return 1
+		}
+		return v
+	case int:
+		if v <= 0 {
+			return 1
+		}
+		return int64(v)
+	default:
+		return 1
+	}
+}
+
+func ReadNextWithTimeout(ctx context.Context, client *redis.Client, consumerName string, block time.Duration) ([]Message, error) {
+	if block < 0 {
+		block = 0
+	}
 	result, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    ConsumerGroup,
 		Consumer: consumerName,
 		Streams:  []string{ReadyStream, ">"},
-		Count:    1,
-		Block:    -1,
+		Count:    10,
+		Block:    block,
 	}).Result()
 
 	if err != nil {
@@ -101,6 +150,14 @@ func ReadNext(ctx context.Context, client *redis.Client, consumerName string) ([
 		return nil, fmt.Errorf("read from stream: %w", err)
 	}
 
+	return toMessages(result)
+}
+
+func ReadNext(ctx context.Context, client *redis.Client, consumerName string) ([]Message, error) {
+	return ReadNextWithTimeout(ctx, client, consumerName, 2*time.Second)
+}
+
+func toMessages(result []redis.XStream) ([]Message, error) {
 	messages := make([]Message, 0)
 
 	for _, stream := range result {
@@ -121,28 +178,11 @@ func ReadNext(ctx context.Context, client *redis.Client, consumerName string) ([
 				)
 			}
 
-			queueGenerationValue, ok := message.Values["queue_generation"].(string)
-			if !ok {
-				return nil, fmt.Errorf(
-					"stream message %q missing queue_generation",
-					message.ID,
-				)
-			}
-
-			queueGeneration, err := strconv.ParseInt(queueGenerationValue, 10, 64)
-			if err != nil {
-				return nil, fmt.Errorf(
-					"stream message %q has invalid queue_generation: %w",
-					message.ID,
-					err,
-				)
-			}
-
 			messages = append(messages, Message{
 				ID:              message.ID,
 				JobID:           jobID,
 				Payload:         payload,
-				QueueGeneration: queueGeneration,
+				QueueGeneration: parseQueueGeneration(message.Values["queue_generation"]),
 			})
 		}
 	}
@@ -230,28 +270,11 @@ func Claim(
 			)
 		}
 
-		queueGenerationValue, ok := message.Values["queue_generation"].(string)
-		if !ok {
-			return nil, fmt.Errorf(
-				"claimed message %q missing queue_generation",
-				message.ID,
-			)
-		}
-
-		queueGeneration, err := strconv.ParseInt(queueGenerationValue, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"claimed message %q has invalid queue_generation: %w",
-				message.ID,
-				err,
-			)
-		}
-
 		messages = append(messages, Message{
 			ID:              message.ID,
 			JobID:           jobID,
 			Payload:         payload,
-			QueueGeneration: queueGeneration,
+			QueueGeneration: parseQueueGeneration(message.Values["queue_generation"]),
 		})
 	}
 
@@ -277,21 +300,16 @@ func ScheduleJob(
 		return fmt.Errorf("marshal scheduled job %q: %w", jobID, err)
 	}
 
-	pipe := client.TxPipeline()
-
-	pipe.ZAdd(ctx, ScheduledSet, redis.Z{
-		Score:  float64(runAt.Unix()),
-		Member: jobID,
-	})
-
-	pipe.HSet(
+	// Atomic ZADD+HSET via Lua so a crash cannot leave a ZSET member
+	// without its payload (which would poison PromoteDue forever).
+	if err := client.Eval(
 		ctx,
-		ScheduledPayloads,
+		`redis.call("ZADD", KEYS[1], ARGV[2], ARGV[1]); redis.call("HSET", KEYS[2], ARGV[1], ARGV[3]); return 1`,
+		[]string{ScheduledSet, ScheduledPayloads},
 		jobID,
+		runAt.Unix(),
 		string(scheduledPayload),
-	)
-
-	if _, err := pipe.Exec(ctx); err != nil {
+	).Err(); err != nil {
 		return fmt.Errorf("schedule job %q: %w", jobID, err)
 	}
 

@@ -154,7 +154,8 @@ func TestLimiter_SetsExpiration(t *testing.T) {
 	}
 
 	windowNumber := time.Now().Unix() / int64(window.Seconds())
-	key := fmt.Sprintf("rate_limit:%s:%d", clientID, windowNumber)
+	_ = windowNumber
+	key := fmt.Sprintf("rate_limit:%s", clientID)
 
 	ttl, err := client.TTL(ctx, key).Result()
 	if err != nil {
@@ -196,5 +197,43 @@ func TestLimiter_ReturnsRemainingTTL(t *testing.T) {
 
 	if ttl > window {
 		t.Fatalf("TTL = %v, want <= %v", ttl, window)
+	}
+}
+
+func TestLimiter_SlidingWindowNoEdgeBurst(t *testing.T) {
+	client := testRedisClient(t)
+
+	window := 2 * time.Second
+	limiter := New(client, 2, window)
+
+	clientID := fmt.Sprintf("edge-client-%d", time.Now().UnixNano())
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		allowed, _, err := limiter.Allow(ctx, clientID)
+		if err != nil {
+			t.Fatalf("request %d error: %v", i+1, err)
+		}
+		if !allowed {
+			t.Fatalf("request %d rejected, want allowed", i+1)
+		}
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	allowed, _, err := limiter.Allow(ctx, clientID)
+	if err != nil {
+		t.Fatalf("edge request error: %v", err)
+	}
+	if allowed {
+		t.Fatal("edge request allowed inside sliding window, want rejected (fixed-window burst)")
+	}
+
+	time.Sleep(2 * time.Second)
+	allowed, _, err = limiter.Allow(ctx, clientID)
+	if err != nil {
+		t.Fatalf("post-window request error: %v", err)
+	}
+	if !allowed {
+		t.Fatal("post-window request rejected, want allowed")
 	}
 }

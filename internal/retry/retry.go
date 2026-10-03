@@ -1,6 +1,9 @@
 package retry
 
-import "time"
+import (
+	"math/rand"
+	"time"
+)
 
 const (
 	BaseDelay = 1 * time.Second
@@ -27,6 +30,21 @@ func Backoff(attempt int) time.Duration {
 	}
 
 	return delay
+}
+
+// BackoffWithJitter is the production retry delay. attempt is 1-based
+// (first execution == 1), so the first retry waits ~BaseDelay.
+// Full-jitter spreads retries after mass failures.
+func BackoffWithJitter(attempt int) time.Duration {
+	if attempt <= 1 {
+		return BaseDelay
+	}
+	base := Backoff(attempt - 1)
+	half := int64(base) / 2
+	if half <= 0 {
+		return base
+	}
+	return time.Duration(half + rand.Int63n(half+1))
 }
 
 func NextRunAt(now time.Time, attempt int) time.Time {
