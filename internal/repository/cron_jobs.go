@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -330,6 +331,17 @@ func (r *CronJobRepository) CreateDueInstance(
 		&instance.QueueGeneration,
 	)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// Concurrent scheduler already created this occurrence.
+			// Advance next_run_at so we don't spin, then report skip.
+			// Best-effort: recompute next run from the locked row.
+			if nextRunAt, nerr := nextRun(cronJob.CronExpression, occurrence); nerr == nil {
+				_, _ = tx.Exec(ctx, `UPDATE cron_jobs SET next_run_at = $2 WHERE id = $1`, cronJob.ID, nextRunAt)
+				_ = tx.Commit(ctx)
+			}
+			return CronInstance{}, false, nil
+		}
 		return CronInstance{}, false, fmt.Errorf(
 			"failed to create cron job instance: %w",
 			err,
@@ -345,6 +357,18 @@ func (r *CronJobRepository) CreateDueInstance(
 			"failed to calculate next cron run: %w",
 			err,
 		)
+	}
+
+	// Catch-up guard: if the scheduler was down for many periods,
+	// nextRunAt can still be in the past, causing one-instance-per-poll
+	// recovery (1h downtime == 1h to catch up). Fast-forward to the next
+	// run from now so we recover in one tick. Missed occurrences are
+	// intentionally skipped; use a smaller schedule if every occurrence matters.
+	if !nextRunAt.After(now) {
+		fastForward, ferr := nextRun(cronJob.CronExpression, now)
+		if ferr == nil && fastForward.After(nextRunAt) {
+			nextRunAt = fastForward
+		}
 	}
 
 	_, err = tx.Exec(

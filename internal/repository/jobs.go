@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var ErrNotFound = fmt.Errorf("resource does not exists")
+var ErrNotFound = fmt.Errorf("resource does not exist")
 
 const StatusPending = "pending"
 const StatusScheduled = "scheduled"
@@ -41,6 +43,11 @@ func (e *ConflictError) Error() string {
 	return e.Message
 }
 
+func (e *ConflictError) Is(target error) bool {
+	_, ok := target.(*ConflictError)
+	return ok
+}
+
 var ErrConflict = &ConflictError{
 	Message: "idempotency key already exists",
 }
@@ -57,19 +64,19 @@ type CreateJobInput struct {
 	CallbackURL    *string
 }
 type Job struct {
-	ID              uuid.UUID
-	Type            string
-	Payload         json.RawMessage
-	Status          string
-	RunAt           time.Time
-	Attempts        int
-	MaxAttempts     int
-	IdempotencyKey  string
-	CallbackURL     *string
-	LastError       *string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	QueueGeneration int64
+	ID              uuid.UUID       `json:"id"`
+	Type            string          `json:"type"`
+	Payload         json.RawMessage `json:"payload"`
+	Status          string          `json:"status"`
+	RunAt           time.Time       `json:"run_at"`
+	Attempts        int             `json:"attempts"`
+	MaxAttempts     int             `json:"max_attempts"`
+	IdempotencyKey  string          `json:"idempotency_key"`
+	CallbackURL     *string         `json:"callback_url,omitempty"`
+	LastError       *string         `json:"last_error,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	QueueGeneration int64           `json:"queue_generation"`
 }
 
 func NewJobRepository(pool *pgxpool.Pool) *JobRepository {
@@ -77,6 +84,9 @@ func NewJobRepository(pool *pgxpool.Pool) *JobRepository {
 }
 
 func (r *JobRepository) Create(ctx context.Context, input CreateJobInput) (uuid.UUID, error) {
+	if err := validateCreateJobInput(input); err != nil {
+		return uuid.Nil, err
+	}
 	var jobID uuid.UUID
 	// generate UUID
 	id := uuid.New()
@@ -108,6 +118,30 @@ func (r *JobRepository) Create(ctx context.Context, input CreateJobInput) (uuid.
 	}
 	return jobID, nil
 
+}
+
+// validateCreateJobInput enforces the repository-boundary contract for 2.6:
+// non-empty type and, when a callback URL is provided, a well-formed
+// absolute http(s) URL. Nil callback is allowed at this layer (cron
+// templates and legacy tests); the API layer additionally requires it.
+func validateCreateJobInput(input CreateJobInput) error {
+	if strings.TrimSpace(input.Type) == "" {
+		return fmt.Errorf("type is required")
+	}
+	if input.CallbackURL == nil {
+		return nil
+	}
+	if strings.TrimSpace(*input.CallbackURL) == "" {
+		return fmt.Errorf("callback_url is required")
+	}
+	u, err := url.Parse(strings.TrimSpace(*input.CallbackURL))
+	if err != nil || !u.IsAbs() || u.Host == "" {
+		return fmt.Errorf("callback_url must be a valid absolute URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("callback_url must use http or https")
+	}
+	return nil
 }
 
 func (r *JobRepository) GetByID(ctx context.Context, id uuid.UUID) (Job, error) {
@@ -162,6 +196,9 @@ func (r *JobRepository) GetByID(ctx context.Context, id uuid.UUID) (Job, error) 
 
 func (r *JobRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status string, lastError *string) error {
 
+	if _, ok := validStatuses[status]; !ok {
+		return fmt.Errorf("invalid job status: %q", status)
+	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
@@ -184,6 +221,17 @@ func (r *JobRepository) ListByStatus(ctx context.Context, status string, limit, 
 		return nil, fmt.Errorf("invalid job status: %q", status)
 	}
 
+	return r.list(ctx, &status, limit, offset)
+}
+
+// List returns jobs across all statuses, newest ordering preserved for
+// pagination stability. Used by GET /v1/jobs without a status filter.
+func (r *JobRepository) List(ctx context.Context, limit, offset int) ([]Job, error) {
+	return r.list(ctx, nil, limit, offset)
+}
+
+func (r *JobRepository) list(ctx context.Context, status *string, limit, offset int) ([]Job, error) {
+
 	if limit <= 0 {
 		return nil, errors.New("limit must be greater than zero")
 	}
@@ -195,14 +243,26 @@ func (r *JobRepository) ListByStatus(ctx context.Context, status string, limit, 
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	query := `SELECT id , type , payload , status , run_at , attempts , max_attempts , idempotency_key , callback_url , last_error , created_at , updated_at
+	var query string
+	var args []any
+	if status != nil {
+		query = `SELECT id , type , payload , status , run_at , attempts , max_attempts , idempotency_key , callback_url , last_error , created_at , updated_at , queue_generation
 	FROM jobs
 	WHERE status = $1
 	ORDER BY created_at ASC, id ASC
 	LIMIT $2
 	OFFSET $3`
+		args = []any{*status, limit, offset}
+	} else {
+		query = `SELECT id , type , payload , status , run_at , attempts , max_attempts , idempotency_key , callback_url , last_error , created_at , updated_at , queue_generation
+	FROM jobs
+	ORDER BY created_at ASC, id ASC
+	LIMIT $1
+	OFFSET $2`
+		args = []any{limit, offset}
+	}
 
-	rows, err := r.pool.Query(ctx, query, status, limit, offset)
+	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
 		return []Job{}, fmt.Errorf("failed to list jobs: %w", err)
 	}
@@ -214,7 +274,7 @@ func (r *JobRepository) ListByStatus(ctx context.Context, status string, limit, 
 	for rows.Next() {
 		var job Job
 
-		err := rows.Scan(&job.ID, &job.Type, &job.Payload, &job.Status, &job.RunAt, &job.Attempts, &job.MaxAttempts, &job.IdempotencyKey, &job.CallbackURL, &job.LastError, &job.CreatedAt, &job.UpdatedAt)
+		err := rows.Scan(&job.ID, &job.Type, &job.Payload, &job.Status, &job.RunAt, &job.Attempts, &job.MaxAttempts, &job.IdempotencyKey, &job.CallbackURL, &job.LastError, &job.CreatedAt, &job.UpdatedAt, &job.QueueGeneration)
 		if err != nil {
 			return []Job{}, fmt.Errorf("failed to scan job: %w", err)
 		}
@@ -237,7 +297,7 @@ func (r *JobRepository) GetByIdempotencyKey(ctx context.Context, key string) (Jo
 	defer cancel()
 
 	query := `
-	SELECT id , type , payload , status , run_at , attempts , max_attempts, idempotency_key , callback_url, last_error , created_at , updated_at FROM jobs WHERE idempotency_key = $1`
+	SELECT id , type , payload , status , run_at , attempts , max_attempts, idempotency_key , callback_url, last_error , created_at , updated_at , queue_generation FROM jobs WHERE idempotency_key = $1`
 
 	err := r.pool.QueryRow(ctx, query, key).Scan(
 		&job.ID,
@@ -252,6 +312,7 @@ func (r *JobRepository) GetByIdempotencyKey(ctx context.Context, key string) (Jo
 		&job.LastError,
 		&job.CreatedAt,
 		&job.UpdatedAt,
+		&job.QueueGeneration,
 	)
 
 	if err != nil {
@@ -394,10 +455,13 @@ func (r *JobRepository) Retry(ctx context.Context, id uuid.UUID) error {
 	}
 
 	if result.RowsAffected() == 0 {
+		checkCtx, checkCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer checkCancel()
+
 		var status string
 
 		err := r.pool.QueryRow(
-			ctx,
+			checkCtx,
 			`SELECT status FROM jobs WHERE id = $1`,
 			id,
 		).Scan(&status)
@@ -410,7 +474,7 @@ func (r *JobRepository) Retry(ctx context.Context, id uuid.UUID) error {
 			return fmt.Errorf("failed to check job status: %w", err)
 		}
 
-		return fmt.Errorf("job cannot be retried from status %q", status)
+		return fmt.Errorf("%w: job status is %q, only dead jobs can be retried", ErrNotCancellable, status)
 	}
 
 	return nil

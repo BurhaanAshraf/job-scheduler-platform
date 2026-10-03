@@ -51,10 +51,11 @@ func TestJobExecutionRepository_Create(t *testing.T) {
 	execRepo := NewJobExecutionRepository(pool)
 
 	execInput := CreateJobExecutionInput{
-		JobID:         jobID,
-		AttemptNumber: 1,
-		StartedAt:     now,
-		Status:        "scheduled",
+		JobID:           jobID,
+		AttemptNumber:   1,
+		StartedAt:       now,
+		Status:          "running",
+		QueueGeneration: 1,
 	}
 	execID1, err := execRepo.Create(ctx, execInput)
 	if err != nil {
@@ -119,4 +120,43 @@ func getExecution(t *testing.T, ctx context.Context, pool *pgxpool.Pool, executi
 	}
 
 	return storedJobID, attemptNumber, nil
+}
+
+func TestJobExecutionRepository_CreateAcrossGenerations(t *testing.T) {
+	// A manual Retry() resets attempts to 0 and bumps queue_generation, so
+	// the new run must coexist with the old run's rows: uniqueness is
+	// (job_id, queue_generation, attempt_number) since migration 000005.
+	ctx := context.Background()
+	pool := testDBPool(t)
+	defer pool.Close()
+	jobRepo := NewJobRepository(pool)
+	cb := "https://example.com/callback"
+	jobID, err := jobRepo.Create(ctx, CreateJobInput{
+		Type:           "email",
+		Payload:        json.RawMessage(`{"a":1}`),
+		RunAt:          time.Now().UTC(),
+		MaxAttempts:    3,
+		IdempotencyKey: uuid.NewString(),
+		CallbackURL:    &cb,
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
+		pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
+	})
+	execRepo := NewJobExecutionRepository(pool)
+	now := time.Now().UTC()
+	for _, gen := range []int64{1, 2} {
+		if _, err := execRepo.Create(ctx, CreateJobExecutionInput{
+			JobID: jobID, AttemptNumber: 1, StartedAt: now,
+			Status: "running", QueueGeneration: gen,
+		}); err != nil {
+			t.Fatalf("create gen %d: %v", gen, err)
+		}
+	}
+	if ok, err := execRepo.HasCompletedExecution(ctx, jobID, 1); err != nil || ok {
+		t.Fatalf("HasCompleted gen1 = %v,%v; want false,nil", ok, err)
+	}
 }

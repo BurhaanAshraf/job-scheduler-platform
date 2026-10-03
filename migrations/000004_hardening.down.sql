@@ -1,0 +1,12 @@
+DROP INDEX IF EXISTS idx_cron_jobs_enabled_next_run_at;
+ALTER TABLE cron_jobs ALTER COLUMN enabled DROP DEFAULT;
+DROP INDEX IF EXISTS idx_api_keys_client_name;
+DROP INDEX IF EXISTS idx_api_keys_hashed_key;
+ALTER TABLE job_executions DROP CONSTRAINT IF EXISTS job_executions_job_attempt_unique;
+DROP INDEX IF EXISTS idx_job_executions_job_id;
+DROP INDEX IF EXISTS idx_jobs_status_created_at;
+DROP INDEX IF EXISTS idx_jobs_idempotency_key;
+ALTER TABLE job_executions DROP CONSTRAINT IF EXISTS job_executions_status_check;
+ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_max_attempts_check;
+ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_attempts_check;
+ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
