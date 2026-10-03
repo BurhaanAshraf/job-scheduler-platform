@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
@@ -45,12 +44,18 @@ func (s *Scheduler) PromoteDue(
 	ctx context.Context,
 	now time.Time,
 ) (int64, error) {
-	count, err := stream.PromoteDue(ctx, s.redis, now)
+	ids, err := stream.PromoteDueWithIDs(ctx, s.redis, now)
 	if err != nil {
 		return 0, fmt.Errorf("promote due jobs: %w", err)
 	}
+	// 10.3 correlation: one log line per job so `grep job_id` shows the
+	// scheduler leg of the lifecycle (API submit and worker legs already
+	// carry job_id).
+	for _, id := range ids {
+		s.log.Info("job promoted", "job_id", id)
+	}
 
-	return count, nil
+	return int64(len(ids)), nil
 }
 
 func (s *Scheduler) Run(ctx context.Context) error {
@@ -90,6 +95,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 	defer stopHeartbeat()
 
+	// 14.7 observability: report ready-queue depth once a minute so a
+	// CloudWatch Logs metric filter can alarm on sustained backlog.
+	// Tick-level logging would drown the log group (500ms polls).
+	var lastDepthLog time.Time
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -115,13 +125,21 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 			isLeader, err := s.leaderLock.IsLeader(ctx)
 			if err != nil {
-				return fmt.Errorf("check scheduler leadership: %w", err)
+				if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+					return ctx.Err()
+				}
+				s.log.Error("check scheduler leadership failed, retrying next tick", "error", err)
+				continue
 			}
 
 			if !isLeader {
 				acquired, err := s.leaderLock.Acquire(ctx)
 				if err != nil {
-					return fmt.Errorf("acquire scheduler leadership: %w", err)
+					if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+						return ctx.Err()
+					}
+					s.log.Error("acquire scheduler leadership failed, retrying next tick", "error", err)
+					continue
 				}
 
 				if !acquired {
@@ -138,31 +156,34 @@ func (s *Scheduler) Run(ctx context.Context) error {
 
 			now := time.Now().UTC()
 
-			dueJobIDs, err := s.redis.ZRangeByScore(
-				ctx,
-				stream.ScheduledSet,
-				&redis.ZRangeBy{
-					Min: "-inf",
-					Max: strconv.FormatInt(now.Unix(), 10),
-				},
-			).Result()
+			promoted, err := s.PromoteDue(ctx, now)
 			if err != nil {
-				return fmt.Errorf("list due jobs: %w", err)
+				if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+					return ctx.Err()
+				}
+				s.log.Error("promote due jobs failed, retrying next tick", "error", err)
+				continue
 			}
 
-			if _, err := s.PromoteDue(ctx, now); err != nil {
-				return fmt.Errorf("promote due jobs: %w", err)
-			}
-
-			for _, jobID := range dueJobIDs {
-				s.log.Info(
-					"job promoted",
-					"job_id", jobID,
-				)
+			if promoted > 0 {
+				s.log.Info("jobs promoted", "count", promoted)
 			}
 
 			if _, err := s.TickCronJobs(ctx, now); err != nil {
-				return fmt.Errorf("tick cron jobs: %w", err)
+				if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+					return ctx.Err()
+				}
+				s.log.Error("tick cron jobs failed, retrying next tick", "error", err)
+				continue
+			}
+
+			if time.Since(lastDepthLog) >= time.Minute {
+				if n, err := s.redis.XLen(ctx, stream.ReadyStream).Result(); err != nil {
+					s.log.Debug("queue depth read failed", "error", err)
+				} else {
+					s.log.Info("queue depth", "depth", n)
+					lastDepthLog = time.Now().UTC()
+				}
 			}
 		}
 	}
@@ -185,11 +206,10 @@ func (s *Scheduler) TickCronJobs(ctx context.Context, now time.Time,
 			NextRunAt,
 		)
 		if err != nil {
-			return created, fmt.Errorf(
-				"create cron instance for %d: %w",
-				cronJob.ID,
-				err,
-			)
+			// Don't abort the whole tick: one bad cron template must not
+			// starve all other crons or kill the scheduler.
+			s.log.Error("create cron instance failed, skipping", "cron_job_id", cronJob.ID, "error", err)
+			continue
 		}
 
 		if !ok {
@@ -209,11 +229,16 @@ func (s *Scheduler) TickCronJobs(ctx context.Context, now time.Time,
 			instance.QueueGeneration,
 		)
 		if err != nil {
-			return created, fmt.Errorf(
-				"enqueue cron instance %s: %w",
-				instance.ID,
-				err,
+			// DB row exists but Redis enqueue failed: log for
+			// reconciliation (future outbox should make this atomic).
+			// Continue ticking other crons instead of crashing.
+			s.log.Error(
+				"enqueue cron instance failed; DB row exists without Redis entry and needs reconciliation",
+				"job_id", instance.ID,
+				"cron_job_id", cronJob.ID,
+				"error", err,
 			)
+			continue
 		}
 
 		created++
