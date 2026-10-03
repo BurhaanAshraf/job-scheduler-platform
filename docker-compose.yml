@@ -1,0 +1,167 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: job_scheduler
+      POSTGRES_USER: burhaan
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U burhaan -d job_scheduler"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  migrate:
+    image: migrate/migrate:v4.18.1
+    command: ["-path", "/migrations", "-database", "postgres://burhaan:${POSTGRES_PASSWORD}@postgres:5432/job_scheduler?sslmode=disable", "up"]
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      JOB_SCHEDULER_DB_DSN: postgres://burhaan:${POSTGRES_PASSWORD}@postgres:5432/job_scheduler?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      API_PORT: 4000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+      SCHEDULER_POLL_INTERVAL: ${SCHEDULER_POLL_INTERVAL:-500ms}
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "/api", "-healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.scheduler
+    environment:
+      JOB_SCHEDULER_DB_DSN: postgres://burhaan:${POSTGRES_PASSWORD}@postgres:5432/job_scheduler?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      API_PORT: 4000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+      SCHEDULER_POLL_INTERVAL: ${SCHEDULER_POLL_INTERVAL:-500ms}
+      SCHEDULER_INSTANCE_ID: ${HOSTNAME:-scheduler-1}
+    healthcheck:
+      test: ["CMD", "/scheduler", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      JOB_SCHEDULER_DB_DSN: postgres://burhaan:${POSTGRES_PASSWORD}@postgres:5432/job_scheduler?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      API_PORT: 4000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+      SCHEDULER_POLL_INTERVAL: ${SCHEDULER_POLL_INTERVAL:-500ms}
+    healthcheck:
+      test: ["CMD", "/worker", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    # Scale with: docker compose up --scale worker=2
+
+  # Public demo callback sink: receives job webhooks at POST /hook, shows them
+  # at GET / (auto-refreshing page) and GET /hits (JSON). In-network jobs use
+  # http://callback:8080/hook. Publish 8080 to share the demo page publicly.
+  # SINK_FAIL_FIRST=N makes the first N hook calls fail (retry demo).
+  callback:
+    build:
+      context: .
+      dockerfile: Dockerfile.callback
+    environment:
+      PORT: 8080
+      SINK_FAIL_FIRST: ${SINK_FAIL_FIRST:-0}
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  # TLS reverse proxy for PUBLIC hosting (docs/HOSTING.md). Off by default;
+  # start with: DOMAIN=jobs.example.com docker compose --profile public up -d
+  # Requires the domain's DNS A-record to point at this host first.
+  proxy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      # Empty until you set DOMAIN (Caddy refuses to start without a site
+      # address, which is the loud failure we want for a missing domain).
+      DOMAIN: ${DOMAIN:-}
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles: ["public"]
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:

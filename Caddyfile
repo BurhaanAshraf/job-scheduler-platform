@@ -1,0 +1,27 @@
+# Reverse proxy for public hosting. Caddy terminates TLS automatically
+# (needs a real domain pointing at this host + ports 80/443 reachable).
+# Only started explicitly:  DOMAIN=jobs.example.com docker compose --profile public up -d --build
+# Local/dev `docker compose up` is unchanged (this service stays off).
+
+{$DOMAIN} {
+	# API (authenticated). Rate limits + auth still enforced by the app.
+	handle /v1/* {
+		reverse_proxy api:4000
+	}
+	handle /healthz {
+		reverse_proxy api:4000
+	}
+	handle /metrics {
+		reverse_proxy api:4000
+	}
+	# Demo callback sink page + receiver. Everything else 404s at Caddy.
+	handle /hook {
+		reverse_proxy callback:8080
+	}
+	handle /hits {
+		reverse_proxy callback:8080
+	}
+	handle {
+		respond "Not found" 404
+	}
+}
