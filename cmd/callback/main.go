@@ -70,7 +70,7 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	sink := &Sink{}
 	if n := os.Getenv("SINK_FAIL_FIRST"); n != "" {
-		fmt.Sscanf(n, "%d", &sink.failFirst)
+		_, _ = fmt.Sscanf(n, "%d", &sink.failFirst)
 	}
 
 	// POST /hook — the demo callback. Records everything, usually 200.

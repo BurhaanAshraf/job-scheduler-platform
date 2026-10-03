@@ -188,7 +188,7 @@ func (r *CronJobRepository) CreateDueInstance(
 	if err != nil {
 		return CronInstance{}, false, fmt.Errorf("failed to begin cron tick transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var cronJob CronJob
 

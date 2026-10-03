@@ -12,7 +12,7 @@ import (
 func TestLeaderLock_HandoffWithinTwoTTL(t *testing.T) {
 	ctx := context.Background()
 	client := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	const lockKey = "test:scheduler:leader:handoff"
 	if err := client.Del(ctx, lockKey).Err(); err != nil {

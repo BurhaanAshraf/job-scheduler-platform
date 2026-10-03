@@ -26,7 +26,7 @@ func TestCreateCronJob_InvalidExpression400(t *testing.T) {
 	)
 
 	body := `{"cron_expression": "not-a-cron", "job_template": {"type":"email","payload":{"to":"a@b.c"},"max_attempts":3,"callback_url":"https://example.com/callback"}}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/cron-jobs", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/cron-jobs", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.CreateCronJob(rec, req)
@@ -50,7 +50,7 @@ func TestCreateCronJob_ValidThenDisableStopsInstances(t *testing.T) {
 	handler := NewHandler(jobRepo, cronRepo, redisClient, slog.Default())
 
 	body := `{"cron_expression": "* * * * *", "job_template": {"type":"email","payload":{"to":"a@b.c"},"max_attempts":3,"callback_url":"https://example.com/callback"}}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/cron-jobs", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/cron-jobs", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.CreateCronJob(rec, req)
@@ -64,8 +64,8 @@ func TestCreateCronJob_ValidThenDisableStopsInstances(t *testing.T) {
 		t.Fatalf("decode cron id: %v", err)
 	}
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), "DELETE FROM jobs WHERE idempotency_key LIKE $1", "cron:%")
-		pool.Exec(context.Background(), "DELETE FROM cron_jobs WHERE id = $1", created.ID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM jobs WHERE idempotency_key LIKE $1", "cron:%")
+		_, _ = pool.Exec(context.Background(), "DELETE FROM cron_jobs WHERE id = $1", created.ID)
 	})
 
 	// Force due now so a tick would materialize an instance.
@@ -75,7 +75,8 @@ func TestCreateCronJob_ValidThenDisableStopsInstances(t *testing.T) {
 	}
 
 	// Disable via endpoint.
-	disableReq := httptest.NewRequest(
+	disableReq := httptest.NewRequestWithContext(
+		context.Background(),
 		http.MethodPatch,
 		"/v1/cron-jobs/1",
 		strings.NewReader(`{"enabled": false}`),
@@ -102,6 +103,6 @@ func TestCreateCronJob_ValidThenDisableStopsInstances(t *testing.T) {
 
 func jsonNumber(id int64) string {
 	var sb strings.Builder
-	json.NewEncoder(&sb).Encode(id)
+	_ = json.NewEncoder(&sb).Encode(id)
 	return strings.TrimSpace(sb.String())
 }

@@ -27,8 +27,8 @@ func TestCreateJob_IdempotentReplayCompactPayload(t *testing.T) {
 	var jobID uuid.UUID
 	t.Cleanup(func() {
 		if jobID != uuid.Nil {
-			pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
-			pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
+			_, _ = pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
+			_, _ = pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
 		}
 		pool.Close()
 	})
@@ -36,7 +36,7 @@ func TestCreateJob_IdempotentReplayCompactPayload(t *testing.T) {
 	// Compact payload: no spaces, so stored bytes WILL differ from sent bytes.
 	body := `{"type":"email","payload":{"to":"compact@example.com"},"run_at":"2026-09-07T12:00:00Z","max_attempts":3,"idempotency_key":"` + idempotencyKey + `","callback_url":"https://example.com/callback"}`
 	doPost := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(body))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/jobs", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		handler.CreateJob(rec, req)

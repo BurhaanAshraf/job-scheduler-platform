@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -20,7 +21,7 @@ func TestRecovery(t *testing.T) {
 		panic("something went wrong")
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/recoverytest", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/recoverytest", nil)
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, req)
@@ -53,7 +54,7 @@ func TestLogging(t *testing.T) {
 		}),
 	)
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodPost,
 		"/v1/jobs",
 		nil,

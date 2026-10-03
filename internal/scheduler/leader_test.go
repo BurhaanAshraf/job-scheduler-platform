@@ -14,7 +14,7 @@ func TestLeaderLock_SecondAcquisitionFails(t *testing.T) {
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	const lockKey = "test:scheduler:leader"
 
@@ -60,7 +60,7 @@ func TestLeaderLock_HeartbeatRenewsLock(t *testing.T) {
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	const lockKey = "test:scheduler:leader:heartbeat"
 
@@ -119,7 +119,7 @@ func TestLeaderLock_ReleaseDoesNotDeleteAnotherOwnersLock(t *testing.T) {
 	client := redis.NewClient(&redis.Options{
 		Addr: "localhost:6379",
 	})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	const lockKey = "test:scheduler:leader:release"
 

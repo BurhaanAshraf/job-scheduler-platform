@@ -23,7 +23,7 @@ func baseEnv(t *testing.T) {
 
 func TestLoad_PollIntervalDefault(t *testing.T) {
 	baseEnv(t)
-	os.Unsetenv("SCHEDULER_POLL_INTERVAL")
+	_ = os.Unsetenv("SCHEDULER_POLL_INTERVAL")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)

@@ -33,6 +33,6 @@ func runHealthcheck() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 	return 0
 }

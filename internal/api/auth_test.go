@@ -52,7 +52,7 @@ func TestAPIKeyAuth_MissingHeader401(t *testing.T) {
 	h := APIKeyAuth(store)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/jobs", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -65,7 +65,7 @@ func TestAPIKeyAuth_BadScheme401(t *testing.T) {
 	h := APIKeyAuth(store)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/jobs", nil)
 	req.Header.Set("Authorization", "Token abc123")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -87,7 +87,7 @@ func TestAPIKeyAuth_RevokedKey401(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	_ = store
-	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/jobs", nil)
 	req.Header.Set("Authorization", "Bearer anything")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -112,7 +112,7 @@ func TestAPIKeyAuth_UnknownKey401(t *testing.T) {
 	h := APIKeyAuth(store)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/jobs", nil)
 	req.Header.Set("Authorization", "Bearer unknown-key")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -131,7 +131,7 @@ func TestAPIKeyAuth_ValidKeyAttachesClient(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/jobs", nil)
 	req.Header.Set("Authorization", "Bearer valid-key")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -156,7 +156,7 @@ func TestAPIKeyAuth_GeneratedRawKeyRoundTrip(t *testing.T) {
 	h := APIKeyAuth(store)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
-	req := httptest.NewRequest(http.MethodGet, "/v1/jobs", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/jobs", nil)
 	req.Header.Set("Authorization", "Bearer "+raw)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

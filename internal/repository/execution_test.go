@@ -143,8 +143,8 @@ func TestJobExecutionRepository_CreateAcrossGenerations(t *testing.T) {
 		t.Fatalf("create job: %v", err)
 	}
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
-		pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
 	})
 	execRepo := NewJobExecutionRepository(pool)
 	now := time.Now().UTC()

@@ -17,7 +17,7 @@ func TestRateLimit_Returns429WithRetryAfter(t *testing.T) {
 		Addr: "localhost:6379",
 	})
 	t.Cleanup(func() {
-		redisClient.Close()
+		_ = redisClient.Close()
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -36,7 +36,7 @@ func TestRateLimit_Returns429WithRetryAfter(t *testing.T) {
 	clientID := "test-client-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 
 	makeRequest := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/test", nil)
 
 		req = req.WithContext(
 			context.WithValue(req.Context(), clientNameKey, clientID),

@@ -26,12 +26,12 @@ func testRedisClient(t *testing.T) *redis.Client {
 	defer cancel()
 
 	if err := client.Ping(ctx).Err(); err != nil {
-		client.Close()
+		_ = client.Close()
 		t.Fatalf("failed to connect to Redis: %v", err)
 	}
 
 	t.Cleanup(func() {
-		client.Close()
+		_ = client.Close()
 	})
 
 	return client

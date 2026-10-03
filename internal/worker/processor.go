@@ -62,7 +62,7 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 
 	if attempt == 0 {
 		// Stale or duplicate delivery (generation mismatch, already
-		// running/done, or cancelled). PG state is authoritative, but a
+		// running/done, or canceled). PG state is authoritative, but a
 		// redelivery is only safe to ack-and-forget when the outcome is
 		// already durable. A running job with NO completed execution for
 		// this generation means the callback never finished (crash between

@@ -22,9 +22,9 @@ const StatusScheduled = "scheduled"
 const StatusRunning = "running"
 const StatusDone = "done"
 const StatusDead = "dead"
-const StatusCancelled = "cancelled"
+const StatusCancelled = "cancelled" //nolint:misspell // 'cancelled' is the contractual spelling (DB CHECK constraint)
 
-var ErrNotCancellable = errors.New("job cannot be cancelled in its current state")
+var ErrNotCancellable = errors.New("job cannot be cancelled in its current state") //nolint:misspell // 'cancelled' is the contractual spelling (DB CHECK constraint)
 
 var validStatuses = map[string]struct{}{
 	StatusPending:   {},
@@ -335,7 +335,7 @@ func (r *JobRepository) Cancel(ctx context.Context, id uuid.UUID) error {
 	if err != nil {
 		return fmt.Errorf("failed to begin cancellation transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var status string
 

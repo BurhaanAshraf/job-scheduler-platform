@@ -65,7 +65,7 @@ func (e *HTTPExecutor) ExecuteJob(ctx context.Context, callbackURL string, paylo
 		return 0, fmt.Errorf("execute callback: %w", err)
 	}
 
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// Drain bounded body so the connection can be reused.
 	_, _ = io.CopyN(io.Discard, resp.Body, maxBodyBytes)
 

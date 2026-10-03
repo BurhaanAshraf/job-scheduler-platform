@@ -54,7 +54,7 @@ func TestProcessor_Process_SuccessUpdatesPostgresAndAcknowledges(t *testing.T) {
 		Addr: redisAddr,
 	})
 	t.Cleanup(func() {
-		redisClient.Close()
+		_ = redisClient.Close()
 	})
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -242,7 +242,7 @@ func TestProcessor_Process_FailureSchedulesRetry(t *testing.T) {
 		Addr: redisAddr,
 	})
 	t.Cleanup(func() {
-		redisClient.Close()
+		_ = redisClient.Close()
 	})
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -446,7 +446,7 @@ func TestProcessor_ClaimsAndProcessesStaleMessage(t *testing.T) {
 		Addr: redisAddr,
 	})
 	t.Cleanup(func() {
-		redisClient.Close()
+		_ = redisClient.Close()
 	})
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -640,7 +640,7 @@ func TestWorker_EndToEndJobExecution(t *testing.T) {
 		Addr: redisAddr,
 	})
 	t.Cleanup(func() {
-		redisClient.Close()
+		_ = redisClient.Close()
 	})
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -796,7 +796,7 @@ func TestProcessor_Process_ExhaustedJobMovesToDeadLetter(t *testing.T) {
 		Addr: redisAddr,
 	})
 	t.Cleanup(func() {
-		redisClient.Close()
+		_ = redisClient.Close()
 	})
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -1155,7 +1155,7 @@ func TestWorker_AttemptIncrementSurvivesCrash(t *testing.T) {
 		Addr: redisAddr,
 	})
 	t.Cleanup(func() {
-		redisClient.Close()
+		_ = redisClient.Close()
 	})
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -1243,7 +1243,8 @@ func TestWorker_AttemptIncrementSurvivesCrash(t *testing.T) {
 
 	projectRoot = filepath.Join(projectRoot, "..", "..")
 
-	build := exec.Command(
+	build := exec.CommandContext(
+		context.Background(),
 		"go",
 		"build",
 		"-o",
@@ -1264,7 +1265,7 @@ func TestWorker_AttemptIncrementSurvivesCrash(t *testing.T) {
 		)
 	}
 
-	workerCmd := exec.Command(workerBinary)
+	workerCmd := exec.CommandContext(context.Background(), workerBinary)
 	workerCmd.Env = append(
 		os.Environ(),
 		"JOB_SCHEDULER_DB_DSN="+dsn,
@@ -1366,7 +1367,7 @@ func TestProcessor_Process_StaleMessageIsAcknowledgedWithoutExecution(t *testing
 		Addr: redisAddr,
 	})
 	t.Cleanup(func() {
-		redisClient.Close()
+		_ = redisClient.Close()
 	})
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {

@@ -90,7 +90,7 @@ func DeadLetter(ctx context.Context, client *redis.Client, jobID string, payload
 }
 
 // RemoveScheduled removes a job from the delayed queue. Best-effort:
-// missing members are not errors. Used on cancel so a cancelled job
+// missing members are not errors. Used on cancel so a canceled job
 // is never promoted after the DB status flips.
 func RemoveScheduled(ctx context.Context, client *redis.Client, jobID string) error {
 	pipe := client.TxPipeline()

@@ -19,7 +19,7 @@ func testRedisClient(t *testing.T) *redis.Client {
 	})
 
 	t.Cleanup(func() {
-		client.Close()
+		_ = client.Close()
 	})
 
 	if err := client.Ping(context.Background()).Err(); err != nil {
@@ -481,7 +481,7 @@ func TestDeadLetter(t *testing.T) {
 		Addr: redisAddr,
 	})
 	t.Cleanup(func() {
-		client.Close()
+		_ = client.Close()
 	})
 
 	if err := client.Ping(ctx).Err(); err != nil {

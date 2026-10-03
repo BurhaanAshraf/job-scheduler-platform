@@ -62,7 +62,7 @@ func run() int {
 		log.Error("failed to connect to Redis", "error", err)
 		return 1
 	}
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	if err := stream.EnsureConsumerGroup(startupCtx, redisClient); err != nil {
 		log.Error("failed to ensure consumer group", "error", err)

@@ -58,12 +58,12 @@ func testRateLimitRedis(t *testing.T) *redis.Client {
 	ctx := context.Background()
 
 	if err := client.Ping(ctx).Err(); err != nil {
-		client.Close()
+		_ = client.Close()
 		t.Fatalf("failed to connect to Redis: %v", err)
 	}
 
 	t.Cleanup(func() {
-		client.Close()
+		_ = client.Close()
 	})
 
 	return client
@@ -116,7 +116,7 @@ func TestCreateJob(t *testing.T) {
 
 	}`, idempotencyKey)
 
-	firstReq := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(body))
+	firstReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/jobs", strings.NewReader(body))
 
 	firstReq.Header.Set("Content-Type", "application/json")
 
@@ -142,7 +142,7 @@ func TestCreateJob(t *testing.T) {
 
 	// Second submission
 
-	secondReq := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(body))
+	secondReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/jobs", strings.NewReader(body))
 
 	secondReq.Header.Set("Content-Type", "application/json")
 
@@ -189,7 +189,7 @@ func TestCreateJob_InvalidJSON(t *testing.T) {
 
 	body := `{"type": "email",`
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/jobs", strings.NewReader(body))
 
 	req.Header.Set("Content-Type", "application/json")
 
@@ -211,7 +211,7 @@ func TestCreateJob_MissingType(t *testing.T) {
 		"idempotency_key": "test-key"
 	}`
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/jobs", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/jobs", strings.NewReader(body))
 
 	req.Header.Set("Content-Type", "application/json")
 
@@ -235,7 +235,7 @@ func TestCreateJob_InvalidPayload(t *testing.T) {
 		"idempotency_key": "test-key"
 	}`
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodPost,
 		"/v1/jobs",
 		strings.NewReader(body),
@@ -263,7 +263,7 @@ func TestCreateJob_InvalidMaxAttempts(t *testing.T) {
 		"idempotency_key": "test-key"
 	}`
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodPost,
 		"/v1/jobs",
 		strings.NewReader(body),
@@ -290,7 +290,7 @@ func TestCreateJob_MissingIdempotencyKey(t *testing.T) {
 		"max_attempts": 3
 	}`
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodPost,
 		"/v1/jobs",
 		strings.NewReader(body),
@@ -317,7 +317,7 @@ func TestCreateJob_MissingCallbackURL(t *testing.T) {
 		"idempotency_key": "test-key"
 	}`
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodPost,
 		"/v1/jobs",
 		strings.NewReader(body),
@@ -347,7 +347,7 @@ func TestCreateJob_InvalidCallbackURL(t *testing.T) {
 		"callback_url": "/callback"
 	}`
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodPost,
 		"/v1/jobs",
 		strings.NewReader(body),
@@ -420,7 +420,7 @@ func TestCreateJob_FutureJobIsScheduled(t *testing.T) {
 		"callback_url": "https://example.com/callback"
 	}`, runAt.Format(time.RFC3339Nano), idempotencyKey)
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodPost,
 		"/v1/jobs",
 		strings.NewReader(body),
@@ -540,7 +540,7 @@ func TestGetJob(t *testing.T) {
 	}
 	jobID = createdID
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/jobs/"+createdID.String(), nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/jobs/"+createdID.String(), nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	recorder := httptest.NewRecorder()
@@ -627,7 +627,7 @@ func TestGetJob_NotFound(t *testing.T) {
 
 	id := uuid.New()
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet, "/v1/jobs/"+id.String(), nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
@@ -679,7 +679,7 @@ func TestAPI_ErrorResponseShape(t *testing.T) {
 	router := Server(logger, handler, nil, limiter)
 	apiKey := createTestAPIKey(t, pool)
 
-	postReq := httptest.NewRequest(
+	postReq := httptest.NewRequestWithContext(context.Background(),
 		http.MethodPost, "/v1/jobs", strings.NewReader(`{}`),
 	)
 	postReq.Header.Set("Authorization", "Bearer "+apiKey)
@@ -698,7 +698,7 @@ func TestAPI_ErrorResponseShape(t *testing.T) {
 		t.Fatalf("failed to decode POST error response: %v", err)
 	}
 
-	getReq := httptest.NewRequest(
+	getReq := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet, "/v1/jobs/"+uuid.New().String(), nil,
 	)
 	getReq.Header.Set("Authorization", "Bearer "+apiKey)
@@ -812,7 +812,7 @@ func TestListJobs_OversizedLimit(t *testing.T) {
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
 	router := Server(logger, handler, nil, limiter)
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet,
 		"/v1/jobs?status=pending&limit=1000&offset=0",
 		nil,
@@ -920,7 +920,7 @@ func TestListJobs_StatusFilter(t *testing.T) {
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
 	router := Server(logger, handler, nil, limiter)
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet,
 		"/v1/jobs?status=pending&limit=100&offset=0",
 		nil,
@@ -1031,7 +1031,7 @@ func TestListJobs_Pagination(t *testing.T) {
 	router := Server(logger, handler, nil, limiter)
 
 	// Fetch the ordered result set.
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet,
 		"/v1/jobs?status=pending&limit=100&offset=0",
 		nil,
@@ -1070,7 +1070,7 @@ func TestListJobs_Pagination(t *testing.T) {
 	firstPosition := positions[jobIDs[0]]
 
 	// Request the page beginning at our first test job.
-	req = httptest.NewRequest(
+	req = httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet,
 		fmt.Sprintf(
 			"/v1/jobs?status=pending&limit=2&offset=%d",
@@ -1181,7 +1181,7 @@ func TestDeleteJob(t *testing.T) {
 	}
 
 	t.Run("cancel pending job", func(t *testing.T) {
-		req := httptest.NewRequest(
+		req := httptest.NewRequestWithContext(context.Background(),
 			http.MethodDelete, "/v1/jobs/"+pendingJobID.String(), nil,
 		)
 		req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -1197,7 +1197,7 @@ func TestDeleteJob(t *testing.T) {
 		job, err := jobRepo.GetByID(context.Background(), pendingJobID)
 
 		if err != nil {
-			t.Fatalf("failed to get cancelled job: %v", err)
+			t.Fatalf("failed to get cancelled job: %v", err) //nolint:misspell // 'cancelled' is the contractual spelling (DB CHECK constraint)
 		}
 		if job.Status != repository.StatusCancelled {
 			t.Fatalf("expected status %q, got %q", repository.StatusCancelled, job.Status)
@@ -1205,7 +1205,7 @@ func TestDeleteJob(t *testing.T) {
 	})
 
 	t.Run("cannot cancel running job", func(t *testing.T) {
-		req := httptest.NewRequest(
+		req := httptest.NewRequestWithContext(context.Background(),
 			http.MethodDelete, "/v1/jobs/"+runningJobID.String(), nil,
 		)
 		req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -1219,7 +1219,7 @@ func TestDeleteJob(t *testing.T) {
 		}
 
 		if !strings.Contains(
-			recorder.Body.String(), "cannot be cancelled",
+			recorder.Body.String(), "cannot be cancelled", //nolint:misspell // 'cancelled' is the contractual spelling (DB CHECK constraint)
 		) {
 			t.Fatalf("expected cancellation explanation, got %s", recorder.Body.String())
 		}
@@ -1229,7 +1229,7 @@ func TestDeleteJob(t *testing.T) {
 func TestGetJob_InvalidID(t *testing.T) {
 	handler := NewHandler(nil, nil, nil, slog.Default())
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet,
 		"/v1/jobs/not-a-uuid",
 		nil,
@@ -1268,7 +1268,7 @@ func TestGetJob_InvalidID(t *testing.T) {
 func TestListJobs_InvalidLimit(t *testing.T) {
 	handler := NewHandler(nil, nil, nil, slog.Default())
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet,
 		"/v1/jobs?status=pending&limit=invalid",
 		nil,
@@ -1307,7 +1307,7 @@ func TestListJobs_InvalidLimit(t *testing.T) {
 func TestListJobs_InvalidOffset(t *testing.T) {
 	handler := NewHandler(nil, nil, nil, slog.Default())
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet,
 		"/v1/jobs?status=pending&offset=-1",
 		nil,
@@ -1352,7 +1352,7 @@ func TestListJobs_InvalidStatus(t *testing.T) {
 
 	handler := NewHandler(repository.NewJobRepository(pool), nil, nil, slog.Default())
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet,
 		"/v1/jobs?status=invalid-status",
 		nil,
@@ -1391,7 +1391,7 @@ func TestListJobs_InvalidStatus(t *testing.T) {
 func TestDeleteJob_InvalidID(t *testing.T) {
 	handler := NewHandler(nil, nil, nil, slog.Default())
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodDelete,
 		"/v1/jobs/not-a-uuid",
 		nil,
@@ -1444,7 +1444,7 @@ func TestDeleteJob_NotFound(t *testing.T) {
 
 	id := uuid.New()
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodDelete,
 		"/v1/jobs/"+id.String(),
 		nil,
@@ -1532,7 +1532,7 @@ func TestHandler_ListDeadLetters(t *testing.T) {
 		Addr: redisAddr,
 	})
 	t.Cleanup(func() {
-		redisClient.Close()
+		_ = redisClient.Close()
 	})
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -1581,7 +1581,7 @@ func TestHandler_ListDeadLetters(t *testing.T) {
 
 	handler := NewHandler(jobRepo, cronRepo, redisClient, slog.Default())
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet,
 		"/v1/dead-letters",
 		nil,
@@ -1651,7 +1651,7 @@ func TestHandler_RetryJob(t *testing.T) {
 		Addr: redisAddr,
 	})
 	t.Cleanup(func() {
-		redisClient.Close()
+		_ = redisClient.Close()
 	})
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
@@ -1752,7 +1752,7 @@ func TestHandler_RetryJob(t *testing.T) {
 
 	handler := NewHandler(jobRepo, cronRepo, redisClient, slog.Default())
 
-	req := httptest.NewRequest(
+	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodPost,
 		"/v1/jobs/"+jobID.String()+"/retry",
 		nil,

@@ -71,7 +71,7 @@ func NewHandler(
 
 func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req CreateJobRequest
 
@@ -285,7 +285,7 @@ func (h *Handler) ListJobs(w http.ResponseWriter, r *http.Request) {
 		offset = parsed
 	}
 
-	jobs := []repository.Job{}
+	var jobs []repository.Job
 	var err error
 	if status == "" {
 		jobs, err = h.jobRepo.List(r.Context(), limit, offset)
@@ -343,7 +343,7 @@ func (h *Handler) DeleteJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if errors.Is(err, repository.ErrNotCancellable) {
-			api.WriteError(w, http.StatusConflict, "CONFLICT", "job cannot be cancelled in its current state")
+			api.WriteError(w, http.StatusConflict, "CONFLICT", "job cannot be cancelled in its current state") //nolint:misspell // 'cancelled' is the contractual spelling (DB CHECK constraint)
 			return
 		}
 		api.WriteError(w, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to cancel job")
@@ -351,12 +351,12 @@ func (h *Handler) DeleteJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Best-effort: remove from delayed queue so a cancelled job is never
+	// Best-effort: remove from delayed queue so a canceled job is never
 	// promoted after the DB status flips. Failures are logged, not fatal,
 	// because the worker's generation guard provides a second line of defense.
 	if h.redis != nil {
 		if err := stream.RemoveScheduled(r.Context(), h.redis, id.String()); err != nil {
-			h.logger.ErrorContext(r.Context(), "failed to remove cancelled job from schedule", "job_id", id, "error", err)
+			h.logger.ErrorContext(r.Context(), "failed to remove cancelled job from schedule", "job_id", id, "error", err) //nolint:misspell // 'cancelled' is the contractual spelling (DB CHECK constraint)
 		}
 	}
 
@@ -609,7 +609,7 @@ func (h *Handler) RetryJob(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) CreateCronJob(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req CreateCronJobRequest
 
@@ -730,7 +730,7 @@ func (h *Handler) UpdateCronJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	var req UpdateCronJobRequest
 

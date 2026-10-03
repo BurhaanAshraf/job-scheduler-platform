@@ -37,7 +37,7 @@ func resilienceDeps(t *testing.T) (context.Context, *pgxpool.Pool, *redis.Client
 	}
 	t.Cleanup(pool.Close)
 	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
-	t.Cleanup(func() { redisClient.Close() })
+	t.Cleanup(func() { _ = redisClient.Close() })
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		t.Fatalf("redis ping: %v", err)
 	}
@@ -88,8 +88,8 @@ func TestWorker_StaysAliveAfterFailure(t *testing.T) {
 		t.Fatalf("create good: %v", err)
 	}
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id IN ($1,$2)", badID, goodID)
-		pool.Exec(context.Background(), "DELETE FROM jobs WHERE id IN ($1,$2)", badID, goodID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id IN ($1,$2)", badID, goodID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM jobs WHERE id IN ($1,$2)", badID, goodID)
 	})
 
 	if _, err := stream.EnqueueDue(ctx, redisClient, badID.String(), payload, 1); err != nil {
@@ -156,8 +156,8 @@ func TestWorker_KilledMidProcessingAppearsInPending(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
-		pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
 	})
 
 	if err := stream.EnsureConsumerGroup(ctx, redisClient); err != nil {
@@ -166,6 +166,7 @@ func TestWorker_KilledMidProcessingAppearsInPending(t *testing.T) {
 	// Simulate a worker that reads but dies before XACK.
 	msgs, err := stream.ReadNextWithTimeout(ctx, redisClient, "crasher-"+uuid.NewString(), 2*time.Second)
 	_ = msgs
+	_ = err // first read is intentionally discarded; the reread below is asserted
 	// Enqueue first so there is something to read.
 	if _, err := stream.EnqueueDue(ctx, redisClient, jobID.String(), []byte(`{"k":1}`), 1); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -215,8 +216,8 @@ func TestProcessor_SuccessLeavesZeroPending(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
-		pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
 	})
 	if _, err := stream.EnqueueDue(ctx, redisClient, jobID.String(), payload, 1); err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -261,8 +262,8 @@ func TestProcessor_StaleRunningWithoutCompletionRedrives(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
-		pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
 	})
 
 	// Simulate crash between StartExecution and Complete.
@@ -345,8 +346,8 @@ func TestProcessor_StaleRunningWithCompletionFinalizes(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
-		pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM job_executions WHERE job_id = $1", jobID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM jobs WHERE id = $1", jobID)
 	})
 
 	attempt, err := jobRepo.StartExecution(ctx, jobID, 1)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,7 @@ func TestServer_UnknownRouteReturns404(t *testing.T) {
 	handler := NewHandler(nil, nil, nil, slog.Default())
 	router := Server(logger, handler, nil, nil)
 
-	req, err := http.NewRequest(http.MethodGet, "/v1/testHttp404", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/testHttp404", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -140,8 +140,8 @@ func TestTickCronJobs_CrashBetweenCommitAndEnqueueNoDuplicate(t *testing.T) {
 		t.Fatalf("create cron: %v", err)
 	}
 	t.Cleanup(func() {
-		pool.Exec(context.Background(), "DELETE FROM jobs WHERE idempotency_key LIKE 'cron:%'")
-		pool.Exec(context.Background(), "DELETE FROM cron_jobs WHERE id = $1", cron.ID)
+		_, _ = pool.Exec(context.Background(), "DELETE FROM jobs WHERE idempotency_key LIKE 'cron:%'")
+		_, _ = pool.Exec(context.Background(), "DELETE FROM cron_jobs WHERE id = $1", cron.ID)
 	})
 
 	// Simulate the DB half committing without the Redis enqueue: call the

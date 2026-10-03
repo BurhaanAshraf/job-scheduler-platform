@@ -53,7 +53,7 @@ func run() int {
 		log.Error("failed to connect to Redis", "error", err)
 		return 1
 	}
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	pool, err := db.NewPool(startupCtx, cfg)
 	if err != nil {

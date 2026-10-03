@@ -51,11 +51,6 @@ end
 
 return promoted`
 
-const scheduleJobScript = `
-redis.call("ZADD", KEYS[1], ARGV[2], ARGV[1])
-redis.call("HSET", KEYS[2], ARGV[1], ARGV[3])
-return 1`
-
 // PromoteDueWithIDs atomically promotes due jobs and returns the promoted
 // job IDs so callers can log per-job correlation lines (10.3).
 func PromoteDueWithIDs(
