@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+*.env
+coverage.out
+*.test
+*.log
+bin/
+dist/
+build/
+tmp/
+docs/
+README.md
+docker-compose.yml
+docker-compose.*.yml
