@@ -61,21 +61,65 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 	}
 
 	if attempt == 0 {
-		ackCount, err := stream.Acknowledge(ctx, p.redis, message.ID)
-		if err != nil {
-			return fmt.Errorf(
-				"acknowledge stale message for job %q: %w",
-				message.JobID,
-				err,
-			)
+		// Stale or duplicate delivery (generation mismatch, already
+		// running/done, or cancelled). PG state is authoritative, but a
+		// redelivery is only safe to ack-and-forget when the outcome is
+		// already durable. A running job with NO completed execution for
+		// this generation means the callback never finished (crash between
+		// StartExecution and Complete, or an execution-Create failure):
+		// marking it done would be a lie, so re-drive it instead. A
+		// generation mismatch means a newer run already owns the job, so
+		// that message is genuinely stale and only needs an ack.
+		if job.Status == repository.StatusRunning && message.QueueGeneration == job.QueueGeneration {
+			completed, err := p.executionRepo.HasCompletedExecution(ctx, job.ID, job.QueueGeneration)
+			if err != nil {
+				return fmt.Errorf("check completed executions for job %q: %w", message.JobID, err)
+			}
+			if completed {
+				// XACK-lost-after-success: the callback did run and its
+				// execution row is done; the redelivery only needs the
+				// status flip that the crash skipped.
+				if err := p.jobRepo.UpdateStatus(ctx, job.ID, repository.StatusDone, nil); err != nil {
+					return fmt.Errorf("finalize stale job %q as done: %w", message.JobID, err)
+				}
+				if err := acknowledgeOnce(ctx, p.redis, message.ID); err != nil {
+					return fmt.Errorf("acknowledge stale message for job %q: %w", message.JobID, err)
+				}
+				return nil
+			}
+			if job.Attempts >= job.MaxAttempts {
+				// Crash-loop guard: every re-drive consumes an attempt via
+				// StartExecution, so attempts only grows. Cap it here the
+				// same way the normal failure path does.
+				lastError := "worker crashed before execution completed"
+				if _, err := stream.DeadLetter(ctx, p.redis, job.ID.String(), []byte(message.Payload)); err != nil {
+					return fmt.Errorf("dead-letter stale job %q: %w", message.JobID, err)
+				}
+				if err := p.jobRepo.UpdateStatus(ctx, job.ID, repository.StatusDead, &lastError); err != nil {
+					return fmt.Errorf("mark stale job %q as dead: %w", message.JobID, err)
+				}
+				if err := acknowledgeOnce(ctx, p.redis, message.ID); err != nil {
+					return fmt.Errorf("acknowledge dead-lettered stale job %q: %w", message.JobID, err)
+				}
+				return nil
+			}
+			// Re-drive: flip back to scheduled (same generation, so the
+			// redelivered message passes the generation guard) and
+			// re-enqueue immediately. The next delivery runs StartExecution
+			// (attempts+1) and executes the callback: at-least-once.
+			if err := p.jobRepo.UpdateStatus(ctx, job.ID, repository.StatusScheduled, nil); err != nil {
+				return fmt.Errorf("reschedule stale job %q: %w", message.JobID, err)
+			}
+			if _, err := stream.EnqueueDue(ctx, p.redis, job.ID.String(), []byte(message.Payload), job.QueueGeneration); err != nil {
+				return fmt.Errorf("re-enqueue stale job %q: %w", message.JobID, err)
+			}
+			if err := acknowledgeOnce(ctx, p.redis, message.ID); err != nil {
+				return fmt.Errorf("acknowledge re-driven stale job %q: %w", message.JobID, err)
+			}
+			return nil
 		}
-
-		if ackCount != 1 {
-			return fmt.Errorf(
-				"expected to acknowledge 1 stale message %q, acknowledged %d",
-				message.ID,
-				ackCount,
-			)
+		if err := acknowledgeOnce(ctx, p.redis, message.ID); err != nil {
+			return fmt.Errorf("acknowledge stale message for job %q: %w", message.JobID, err)
 		}
 
 		return nil
@@ -84,20 +128,23 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 	executionID, err := p.executionRepo.Create(
 		ctx,
 		repository.CreateJobExecutionInput{
-			JobID:         job.ID,
-			AttemptNumber: attempt,
-			StartedAt:     time.Now().UTC(),
-			Status:        "running",
+			JobID:           job.ID,
+			AttemptNumber:   attempt,
+			StartedAt:       time.Now().UTC(),
+			Status:          "running",
+			QueueGeneration: message.QueueGeneration,
 		},
 	)
 	if err != nil {
 		return fmt.Errorf("create execution for job %q: %w", message.JobID, err)
 	}
 
-	responseCode, executeErr := p.executor.Execute(
+	responseCode, executeErr := p.executor.ExecuteJob(
 		ctx,
 		*job.CallbackURL,
 		[]byte(message.Payload),
+		job.ID.String(),
+		attempt,
 	)
 
 	finishedAt := time.Now().UTC()
@@ -154,13 +201,17 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 
 		if attempt < job.MaxAttempts {
 			nextRunAt := time.Now().UTC().Add(retry.Backoff(attempt))
+			newGeneration := job.QueueGeneration + 1
 
+			// Enqueue first with the next generation; DB still holds the
+			// old generation so a crash here leaves the message pending
+			// and redelivery can retry safely.
 			if err := stream.ScheduleJob(
 				ctx,
 				p.redis,
 				job.ID.String(),
 				[]byte(message.Payload),
-				job.QueueGeneration,
+				newGeneration,
 				nextRunAt,
 			); err != nil {
 				return fmt.Errorf(
@@ -170,37 +221,18 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 				)
 			}
 
-			if updateErr := p.jobRepo.UpdateStatus(
-				ctx,
-				job.ID,
-				job.Status,
-				&lastError,
-			); updateErr != nil {
-				return fmt.Errorf(
-					"record failure for job %q: %w",
-					message.JobID,
-					updateErr,
-				)
+			if _, schedErr := p.jobRepo.ScheduleRetry(ctx, job.ID, nextRunAt, &lastError); schedErr != nil {
+				// Compensate: DB did not advance, remove the Redis entry
+				// we just created so it can never be promoted stale.
+				_ = stream.RemoveScheduled(ctx, p.redis, job.ID.String())
+				return fmt.Errorf("schedule retry for job %q: %w", message.JobID, schedErr)
 			}
 
-			ackCount, err := stream.Acknowledge(
-				ctx,
-				p.redis,
-				message.ID,
-			)
-			if err != nil {
+			if err := acknowledgeOnce(ctx, p.redis, message.ID); err != nil {
 				return fmt.Errorf(
 					"acknowledge failed job %q after scheduling retry: %w",
 					message.JobID,
 					err,
-				)
-			}
-
-			if ackCount != 1 {
-				return fmt.Errorf(
-					"expected to acknowledge 1 message %q, acknowledged %d",
-					message.ID,
-					ackCount,
 				)
 			}
 
@@ -237,24 +269,11 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 			)
 		}
 
-		ackCount, err := stream.Acknowledge(
-			ctx,
-			p.redis,
-			message.ID,
-		)
-		if err != nil {
+		if err := acknowledgeOnce(ctx, p.redis, message.ID); err != nil {
 			return fmt.Errorf(
 				"acknowledge dead-lettered job %q: %w",
 				message.JobID,
 				err,
-			)
-		}
-
-		if ackCount != 1 {
-			return fmt.Errorf(
-				"expected to acknowledge 1 message %q, acknowledged %d",
-				message.ID,
-				ackCount,
 			)
 		}
 
@@ -286,12 +305,7 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 		metrics.JobsCompletedKey,
 	)
 
-	ackCount, err := stream.Acknowledge(
-		ctx,
-		p.redis,
-		message.ID,
-	)
-	if err != nil {
+	if err := acknowledgeOnce(ctx, p.redis, message.ID); err != nil {
 		return fmt.Errorf(
 			"acknowledge job %q: %w",
 			message.JobID,
@@ -299,13 +313,16 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 		)
 	}
 
-	if ackCount != 1 {
-		return fmt.Errorf(
-			"expected to acknowledge 1 message %q, acknowledged %d",
-			message.ID,
-			ackCount,
-		)
-	}
+	return nil
+}
 
+func acknowledgeOnce(ctx context.Context, client *redis.Client, messageID string) error {
+	count, err := stream.Acknowledge(ctx, client, messageID)
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("expected to acknowledge 1 message %q, acknowledged %d", messageID, count)
+	}
 	return nil
 }
