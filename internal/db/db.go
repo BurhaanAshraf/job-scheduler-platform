@@ -21,19 +21,18 @@ func NewPool(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("failed to establish database pool: %w", err)
 	}
 
-	err = Ping(pool, ctx)
-	if err != nil {
+	if err := Ping(ctx, pool); err != nil {
+		pool.Close()
 		return nil, err
 	}
 
 	return pool, nil
 }
 
-func Ping(pool *pgxpool.Pool, ctx context.Context) error {
+func Ping(ctx context.Context, pool *pgxpool.Pool) error {
 
 	err := pool.Ping(ctx)
 	if err != nil {
-		pool.Close()
 		return fmt.Errorf("failed to reach database during ping: %w", err)
 	}
 	return nil

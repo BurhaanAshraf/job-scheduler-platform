@@ -11,6 +11,7 @@ import (
 func New(ctx context.Context, cfg config.Config) (*redis.Client, error) {
 	client := redis.NewClient(&redis.Options{
 		Addr:         cfg.RedisAddr,
+		Password:     cfg.RedisPassword,
 		PoolSize:     10,
 		MinIdleConns: 2,
 		DialTimeout:  2 * time.Second,

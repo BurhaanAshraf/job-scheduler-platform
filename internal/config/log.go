@@ -5,7 +5,7 @@ import "log/slog"
 func LogSnapshot(log *slog.Logger, cfg Config) {
 	log.Info(
 		"resolved configuration",
-		"DB_DSN", "***",
+		"JOB_SCHEDULER_DB_DSN", "***",
 		"REDIS_ADDR", cfg.RedisAddr,
 		"API_PORT", cfg.APIPort,
 		"LOG_LEVEL", cfg.LogLevel,
