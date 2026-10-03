@@ -29,14 +29,17 @@ func NewChecker(
 }
 
 func (c *Checker) Check(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
+	dbCtx, dbCancel := context.WithTimeout(ctx, c.timeout)
+	defer dbCancel()
 
-	if err := c.db.Ping(ctx); err != nil {
+	if err := c.db.Ping(dbCtx); err != nil {
 		return fmt.Errorf("database health check: %w", err)
 	}
 
-	if err := c.redis.Ping(ctx); err != nil {
+	redisCtx, redisCancel := context.WithTimeout(ctx, c.timeout)
+	defer redisCancel()
+
+	if err := c.redis.Ping(redisCtx); err != nil {
 		return fmt.Errorf("redis health check: %w", err)
 	}
 

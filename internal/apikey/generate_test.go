@@ -43,3 +43,17 @@ func TestGenerate_ReturnsDifferentKeys(t *testing.T) {
 		t.Fatal("Generate() returned the same raw key twice")
 	}
 }
+
+func TestGenerate_RawKeyAuthenticatesThroughMiddleware(t *testing.T) {
+	// 4.3 Done-when: the printed raw key authenticates through the middleware.
+	rawKey, hashedKey, err := Generate()
+	if err != nil {
+		t.Fatalf("Generate() returned error: %v", err)
+	}
+	if Hash(rawKey) != hashedKey {
+		t.Fatalf("Hash(raw) != stored hash: %q vs %q", Hash(rawKey), hashedKey)
+	}
+	if rawKey == hashedKey {
+		t.Fatal("raw key must differ from stored hash (hash-only storage)")
+	}
+}

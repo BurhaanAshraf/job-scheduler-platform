@@ -29,13 +29,13 @@ func main() {
 	}
 
 	cfg, err := config.Load()
-	cfg.DBMaxConns = 20
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading configuration: %v\n", err)
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	pool, err := db.NewPool(ctx, cfg)
 	if err != nil {

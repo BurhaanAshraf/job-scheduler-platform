@@ -2,7 +2,7 @@ package api
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 )
 
@@ -27,6 +27,6 @@ func WriteError(w http.ResponseWriter, status int, code, message string) {
 
 	err := json.NewEncoder(w).Encode(response)
 	if err != nil {
-		log.Fatalf("Error sending response: %v", err)
+		slog.Error("failed to encode error response", "error", err)
 	}
 }

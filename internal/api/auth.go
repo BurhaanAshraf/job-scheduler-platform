@@ -2,12 +2,11 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
 
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/apikey"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 )
 
@@ -15,7 +14,13 @@ type contextKey string
 
 const clientNameKey contextKey = "client_name"
 
-func APIKeyAuth(repo *repository.JobRepository) func(http.Handler) http.Handler {
+// APIKeyStore is the subset of repository needed for authentication.
+// Using an interface avoids coupling auth to JobRepository.
+type APIKeyStore interface {
+	GetAPIKeyByHash(ctx context.Context, hashedKey string) (*repository.APIKey, error)
+}
+
+func APIKeyAuth(repo APIKeyStore) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -44,15 +49,15 @@ func APIKeyAuth(repo *repository.JobRepository) func(http.Handler) http.Handler 
 				return
 			}
 
-			sum := sha256.Sum256([]byte(rawkey))
+			sum := apikey.Hash(rawkey)
 
-			hashKey := hex.EncodeToString(sum[:])
+			hashKey := sum
 
 			key, err := repo.GetAPIKeyByHash(r.Context(), hashKey)
 
 			if err != nil {
 				if errors.Is(err, repository.ErrNotFound) {
-					WriteError(w, http.StatusUnauthorized, "UNATHORIZED", "invalid API key")
+					WriteError(w, http.StatusUnauthorized, "UNAUTHORIZED", "invalid API key")
 					return
 				}
 

@@ -1,12 +1,18 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"time"
-	"uuid"
+
+	"github.com/google/uuid"
 )
+
+type requestIDKey string
+
+const RequestIDKey requestIDKey = "request_id"
 
 type StatusWriter struct {
 	http.ResponseWriter
@@ -54,18 +60,39 @@ func Logging(log *slog.Logger, next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &StatusWriter{
 			ResponseWriter: w,
-			status:         http.StatusOK,
+			status:         0,
 		}
 		requestID := uuid.New().String()
-		next.ServeHTTP(sw, r)
-		// calling log.Printf after next.ServeHTTP ensures the duration is accurate
+		w.Header().Set("X-Request-ID", requestID)
+		ctx := context.WithValue(r.Context(), RequestIDKey, requestID)
+		next.ServeHTTP(sw, r.WithContext(ctx))
+		status := sw.status
+		if !sw.wroteHeader {
+			status = http.StatusOK
+		}
+		// calling log after next.ServeHTTP ensures the duration is accurate
 		log.Info(
 			"http request",
 			"request_id", requestID,
 			"method", r.Method,
 			"path", r.URL.Path,
-			"status", sw.status,
-			"latency", time.Since(start),
+			"status", status,
+			"latency", time.Since(start).String(),
+			"latency_ms", time.Since(start).Milliseconds(),
 		)
 	})
+}
+
+// RequestIDFromContext returns the request ID injected by Logging.
+func RequestIDFromContext(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(RequestIDKey).(string)
+	return id, ok
+}
+
+// RequestIDFromContextOrEmpty is the log-field helper for 10.3: it returns
+// the request id or "" when the handler is invoked without the Logging
+// middleware (unit tests).
+func RequestIDFromContextOrEmpty(ctx context.Context) string {
+	id, _ := RequestIDFromContext(ctx)
+	return id
 }

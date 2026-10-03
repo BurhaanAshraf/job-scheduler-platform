@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
 	"github.com/prometheus/client_golang/prometheus"
@@ -63,7 +64,8 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 }
 
 func (c *Collector) Collect(ch chan<- prometheus.Metric) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
 	submitted, err := c.redis.Get(ctx, JobsSubmittedKey).Int64()
 	if err != nil && err != redis.Nil {
@@ -71,7 +73,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			c.jobsSubmitted,
 			fmt.Errorf("read submitted jobs metric: %w", err),
 		)
-		return
+		submitted = 0
 	}
 
 	completed, err := c.redis.Get(ctx, JobsCompletedKey).Int64()
@@ -80,7 +82,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			c.jobsCompleted,
 			fmt.Errorf("read completed jobs metric: %w", err),
 		)
-		return
+		completed = 0
 	}
 
 	failed, err := c.redis.Get(ctx, JobsFailedKey).Int64()
@@ -89,7 +91,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			c.jobsFailed,
 			fmt.Errorf("read failed jobs metric: %w", err),
 		)
-		return
+		failed = 0
 	}
 
 	queueDepth, err := c.redis.XLen(ctx, stream.ReadyStream).Result()
@@ -98,7 +100,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 			c.queueDepth,
 			fmt.Errorf("read queue depth: %w", err),
 		)
-		return
+		queueDepth = 0
 	}
 
 	ch <- prometheus.MustNewConstMetric(

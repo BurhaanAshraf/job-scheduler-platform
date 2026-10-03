@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/config"
@@ -18,39 +21,52 @@ import (
 )
 
 func main() {
+	for _, a := range os.Args[1:] {
+		if a == "-healthcheck" || a == "--healthcheck" {
+			os.Exit(runHealthcheck())
+		}
+	}
+	os.Exit(run())
+}
 
-	log := logger.New("api")
-
+func run() int {
+	// Load config first with a bootstrap logger; LOG_LEVEL applies after.
+	bootstrap := logger.New("api")
 	cfg, err := config.Load()
 	if err != nil {
-		log.Error("something wrong with config", "err", err)
-		return
+		bootstrap.Error("invalid configuration", "err", err)
+		return 1
 	}
 
+	log := logger.NewWithLevel("api", logger.ParseLevel(cfg.LogLevel))
 	config.LogSnapshot(log, cfg)
 
-	startupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	pool, err := db.NewPool(startupCtx, cfg)
+	dbCtx, dbCancel := context.WithTimeout(ctx, 5*time.Second)
+	pool, err := db.NewPool(dbCtx, cfg)
+	dbCancel()
 	if err != nil {
 		log.Error("error creating connection pool", "err", err)
-		return
+		return 1
 	}
-
 	defer pool.Close()
 
-	redisClient, err := redisclient.New(startupCtx, cfg)
+	redisCtx, redisCancel := context.WithTimeout(ctx, 5*time.Second)
+	redisClient, err := redisclient.New(redisCtx, cfg)
+	redisCancel()
 	if err != nil {
 		log.Error("failed to connect to Redis", "error", err)
-		os.Exit(1)
+		return 1
 	}
+	defer redisClient.Close()
 
 	metricsCollector := metrics.NewCollector(redisClient)
-
-	prometheus.MustRegister(metricsCollector)
-
-	defer redisClient.Close()
+	if err := prometheus.Register(metricsCollector); err != nil {
+		log.Error("failed to register metrics", "error", err)
+		return 1
+	}
 
 	healthChecker := health.NewChecker(
 		pool,
@@ -65,17 +81,30 @@ func main() {
 
 	handler := NewHandler(jobRepo, cronRepo, redisClient, log)
 
-	limiter := ratelimit.New(redisClient, 5, time.Minute)
+	limiter := ratelimit.New(redisClient, 60, time.Minute)
 
 	server := &http.Server{
-		Addr:    ":" + cfg.APIPort,
-		Handler: Server(log, handler, healthHandler, limiter),
+		Addr:              ":" + cfg.APIPort,
+		Handler:           Server(log, handler, healthHandler, limiter),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
-	log.Info("API server listening", "addr", server.Addr)
-	err = server.ListenAndServe()
+	go func() {
+		log.Info("API server listening", "addr", server.Addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("HTTP server failed", "err", err)
+			stop()
+		}
+	}()
 
-	if err != nil && err != http.ErrServerClosed {
-		log.Error("HTTP server failed", "err", err)
+	<-ctx.Done()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Error("graceful shutdown failed", "err", err)
+		return 1
 	}
-
+	return 0
 }

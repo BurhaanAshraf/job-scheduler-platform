@@ -10,7 +10,7 @@ func TestWriteError(t *testing.T) {
 	recorder := httptest.NewRecorder()
 
 	WriteError(
-		recorder, http.StatusBadRequest, "INVALID_REQUEST" , "invalid request",
+		recorder, http.StatusBadRequest, "INVALID_REQUEST", "invalid request",
 	)
 
 	if recorder.Code != http.StatusBadRequest {
