@@ -1,0 +1,8 @@
+# One-shot database migration image (ops tooling, not a service).
+# Alpine wrapper so the DSN can come from a Secrets Manager env var
+# (ECS `secrets:`), keeping credentials out of the image and task args.
+FROM migrate/migrate:v4.18.1 AS m
+FROM alpine:3.20
+COPY --from=m /migrate /usr/local/bin/migrate
+COPY migrations/ /migrations/
+ENTRYPOINT ["sh", "-c", "migrate -path=/migrations -database=\"$DB_DSN\" up"]
