@@ -178,7 +178,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			}
 
 			if time.Since(lastDepthLog) >= time.Minute {
-				if n, err := s.redis.XLen(ctx, stream.ReadyStream).Result(); err != nil {
+				if n, err := stream.QueueBacklog(ctx, s.redis); err != nil {
 					s.log.Debug("queue depth read failed", "error", err)
 				} else {
 					s.log.Info("queue depth", "depth", n)

@@ -94,7 +94,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		failed = 0
 	}
 
-	queueDepth, err := c.redis.XLen(ctx, stream.ReadyStream).Result()
+	queueDepth, err := stream.QueueBacklog(ctx, c.redis)
 	if err != nil {
 		ch <- prometheus.NewInvalidMetric(
 			c.queueDepth,
