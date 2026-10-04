@@ -79,7 +79,11 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
       SCHEDULER_POLL_INTERVAL: ${SCHEDULER_POLL_INTERVAL:-500ms}
-      SCHEDULER_INSTANCE_ID: ${HOSTNAME:-scheduler-1}
+      # Instance identity for leader election. Empty default lets the binary
+      # fall back to hostname-uuid (unique per replica), which is required
+      # for correct failover observability when scaled past 1. The old
+      # ${HOSTNAME:-scheduler-1} gave every replica the SAME id.
+      SCHEDULER_INSTANCE_ID: ${SCHEDULER_INSTANCE_ID:-}
     healthcheck:
       test: ["CMD", "/scheduler", "-healthcheck"]
       interval: 15s
@@ -107,6 +111,10 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
       SCHEDULER_POLL_INTERVAL: ${SCHEDULER_POLL_INTERVAL:-500ms}
+      # Dev-only: lets the demo callback sink (http://callback:8080/hook,
+      # a private compose-network address) receive webhooks. Production task
+      # definitions deliberately OMIT this, keeping the SSRF guard strict.
+      JOB_SCHEDULER_ALLOW_PRIVATE_IPS: "true"
     healthcheck:
       test: ["CMD", "/worker", "-healthcheck"]
       interval: 15s
