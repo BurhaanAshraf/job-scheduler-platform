@@ -38,6 +38,32 @@ jobs:
           version: latest
           args: ./...
 
+  secret-scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: detect --source=. --verbose --redact
+
+  vuln-scan:
+    name: vulnerability scan (govulncheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
   test:
     name: test (race + coverage)
     runs-on: ubuntu-latest
@@ -82,6 +108,18 @@ jobs:
       # Serial, no cache: integration tests share one Postgres + Redis.
       - name: Test with race detector
         run: go test -race ./... -p 1 -count=1 -coverprofile=coverage.out
+      - name: Check coverage threshold (70% on internal/)
+        run: |
+          # NOTE: coverprofile lines start with the full module path
+          # (github.com/.../internal/...), so match 'internal/' anywhere.
+          go tool cover -func=coverage.out | awk '/internal\// {total+=$3; count++} END {if (count>0) print int(total/count); else print 0}' > /tmp/coverage_pct.txt
+          COV=$(cat /tmp/coverage_pct.txt)
+          echo "Average coverage on internal/: ${COV}%"
+          if [ "$COV" -lt 70 ]; then
+            echo "FAIL: Coverage ${COV}% is below 70% threshold"
+            exit 1
+          fi
+          echo "PASS: Coverage meets 70% threshold"
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -100,3 +138,36 @@ jobs:
       # Dockerfile fails the run here, before any merge.
       - name: Build all images
         run: docker compose build
+
+  # Terraform plan check (runs when .tf files change)
+  terraform-plan:
+    name: terraform plan
+    runs-on: ubuntu-latest
+    # Path filter: only runs when infra changes. (The old
+    # contains(...changed_files...) expression never matched anything.)
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.x
+      - name: Terraform fmt check
+        run: terraform -chdir=terraform fmt -check -recursive
+      - name: Terraform init (no backend - lint only)
+        run: terraform -chdir=terraform init -backend=false
+      - name: Terraform validate
+        run: terraform -chdir=terraform validate
+      # Full plan against dev needs state access: runs only when the repo
+      # has OIDC wired (same deploy role Terraform creates). Dummy password:
+      # plan never reads the real secret value.
+      - name: Configure AWS credentials (OIDC)
+        if: vars.AWS_OIDC_PLAN_ENABLED == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: ap-south-2
+      - name: Terraform plan (dev)
+        if: vars.AWS_OIDC_PLAN_ENABLED == 'true'
+        run: terraform -chdir=terraform init -reconfigure -backend-config=backend-dev.hcl && terraform -chdir=terraform plan -no-color -var-file=dev.tfvars -input=false
+        env:
+          TF_VAR_db_password: "ci-plan-dummy-password-0123456789"
