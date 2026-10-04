@@ -1,0 +1,97 @@
+```mermaid
+flowchart LR
+    subgraph Client["Clients"]
+        C1["API Client"]
+        C2["Webhook Receiver"]
+    end
+
+    subgraph Public["Public Subnet (ALB Targets)"]
+        ALB[("ALB\n:80/:443")]
+    end
+
+    subgraph Private["Private Resources"]
+        direction TB
+        PG[("PostgreSQL 16\nRDS db.t4g.micro")]
+        RC[("Redis 7\nElastiCache cache.t4g.micro")]
+    end
+
+    subgraph ECS["ECS Fargate Services (ap-south-2)"]
+        direction TB
+        API1["api ×2\n256 CPU / 512 MiB"]
+        API2["api ×2"]
+        SCH["scheduler ×1\n256 CPU / 512 MiB"]
+        W1["worker ×2–6\n256 CPU / 512 MiB"]
+        W2["worker ×2–6"]
+    end
+
+    subgraph Monitoring["Observability"]
+        CWL[("CloudWatch Logs")]
+        CWM[("CloudWatch Metrics")]
+        CWA[("CloudWatch Alarms")]
+        SNS[("SNS Topics\n→ Email")]
+    end
+
+    subgraph CI_CD["CI/CD"]
+        GH["GitHub Actions\nOIDC → IAM Role"]
+        ECR[("ECR Repos\napi/scheduler/worker")]
+    end
+
+    C1 -->|HTTPS| ALB
+    ALB -->|/v1/*| API1
+    ALB -->|/v1/*| API2
+    ALB -->|/healthz, /metrics| API1
+    ALB -->|/healthz, /metrics| API2
+
+    API1 -->|DSN from Secrets Manager| PG
+    API2 -->|DSN from Secrets Manager| PG
+    API1 -->|Redis Streams| RC
+    API2 -->|Redis Streams| RC
+
+    SCH -->|Leader Lock| RC
+    SCH -->|Promote Due Jobs| RC
+    SCH -->|Cron Tick| PG
+
+    W1 -->|Claim Jobs| RC
+    W2 -->|Claim Jobs| RC
+    W1 -->|Record Attempts| PG
+    W2 -->|Record Attempts| PG
+    W1 -->|POST callback_url| C2
+    W2 -->|POST callback_url| C2
+
+    API1 -.->|JSON Logs| CWL
+    API2 -.->|JSON Logs| CWL
+    SCH -.->|JSON Logs| CWL
+    W1 -.->|JSON Logs| CWL
+    W2 -.->|JSON Logs| CWL
+
+    CWL -->|Metric Filters| CWM
+    CWM -->|Threshold Breach| CWA
+    CWA -->|ALARM| SNS
+    SNS -->|Email| C1
+
+    GH -->|OIDC Assume Role| ECR
+    GH -->|Build & Push :sha| ECR
+    GH -->|ecs deploy| API1
+    GH -->|ecs deploy| SCH
+    GH -->|ecs deploy| W1
+
+    style PG fill:#f9f,stroke:#333
+    style RC fill:#f9f,stroke:#333
+    style ALB fill:#bbf,stroke:#333
+    style SNS fill:#f96,stroke:#333
+```
+
+**Architecture Diagram** — Job Scheduler Platform on AWS
+
+*   **Region**: `ap-south-2` (Mumbai)
+*   **Network**: VPC with public subnets only (cost optimization — no NAT Gateway). Tasks use public IPs via IGW with restrictive Security Groups.
+*   **Data Plane**:
+    *   PostgreSQL 16 (RDS) — system of record for jobs, executions, cron, API keys.
+    *   Redis 7 (ElastiCache) — live dispatch via Streams + consumer groups; scheduler leadership lock.
+*   **Compute**: ECS Fargate (3 services)
+    *   `api` — 2 tasks, behind ALB, stateless.
+    *   `scheduler` — 1 task (leader election via Redis), promotes due jobs & spawns cron instances.
+    *   `worker` — 2–6 tasks (CPU autoscaling), claims from stream, executes webhooks.
+*   **Secrets**: DB DSN in Secrets Manager (referenced by ARN in task defs).
+*   **Observability**: Structured JSON logs → CloudWatch Logs → Metric Filters → CloudWatch Alarms → SNS → Email.
+*   **CI/CD**: GitHub Actions → OIDC → IAM Deploy Role (no static keys) → ECR → ECS rolling deploy → smoke test `/healthz`.

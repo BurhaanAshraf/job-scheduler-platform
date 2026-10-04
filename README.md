@@ -57,6 +57,8 @@ flowchart LR
     W2 --> CB
 ```
 
+> **Detailed architecture diagram**: See [`docs/architecture.mmd`](docs/architecture.mmd) for a full-annotated Mermaid diagram with observability, CI/CD, and network topology details.
+
 Request path: `POST /v1/jobs` persists the job in Postgres, enqueues it in the
 `jobs:ready` stream, and returns the id. The single leader scheduler promotes
 due jobs and spawns cron instances; workers claim stream messages, POST the
@@ -193,6 +195,33 @@ go test ./... -p 1 -count=1        # serial: integration tests share one PG+Redi
 cases; `internal/scheduler` covers leader handoff; `internal/worker` covers
 flaky/slow-callback resilience. `docker compose` + the `callback` sink give a
 full local end-to-end (submit → worker POST → sink records → `done`).
+
+### Load Test Results (Local)
+
+Sustained 4-minute test with 5 API keys (60 req/min/key limit):
+* **Requests**: 1,200 over 4 minutes
+* **Success rate**: 93% (1,117/1,200)
+* **Rate limited**: 7% (83 requests returned 429 with `Retry-After`)
+* **Latency**: p50 17 ms, p95 18 ms, p99 20 ms, max 24 ms
+* **Throughput**: 5 req/s (limited by design — 60 req/min per key)
+
+Run locally: `go run loadtest5.go` (requires 5 API keys provisioned in DB).
+
+### CI Quality Gates
+
+Every push runs the following automated checks via GitHub Actions:
+
+| Gate | Tool | Threshold |
+|------|------|-----------|
+| Lint | `golangci-lint` | Zero warnings (govet, staticcheck, errcheck, unused) |
+| Race-detected tests | `go test -race` | Zero data races |
+| Coverage | `go tool cover` | ≥ 70% on `internal/` packages |
+| Secret scan | `gitleaks` | Zero secrets in history |
+| Vulnerability scan | `govulncheck` | Zero high-severity CVEs in dependencies |
+| Docker build | `docker compose build` | All images build successfully |
+| Terraform plan | `terraform plan` | `fmt`+`validate` on every PR; full dev `plan` when OIDC is wired (`AWS_OIDC_PLAN_ENABLED`) |
+
+All gates must pass before merge. The CI workflow is defined in `.github/workflows/ci.yml`.
 
 ## Production (AWS)
 
