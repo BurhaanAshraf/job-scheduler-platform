@@ -23,6 +23,7 @@ import (
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/ratelimit"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/validator"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/worker"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -1866,6 +1867,7 @@ func TestHandler_RetryJob(t *testing.T) {
 		executionRepo,
 		redisClient,
 		executor.NewHTTPExecutor(),
+		validator.Config{AllowPrivateIPs: true},
 	)
 
 	retryMessages, err := stream.ReadNext(

@@ -11,6 +11,7 @@ import (
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/retry"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/validator"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -20,6 +21,7 @@ type Processor struct {
 	executionRepo *repository.JobExecutionRepository
 	redis         *redis.Client
 	executor      *executor.HTTPExecutor
+	validatorCfg  validator.Config
 }
 
 func NewProcessor(
@@ -27,12 +29,14 @@ func NewProcessor(
 	executionRepo *repository.JobExecutionRepository,
 	redisClient *redis.Client,
 	httpExecutor *executor.HTTPExecutor,
+	validatorCfg validator.Config,
 ) *Processor {
 	return &Processor{
 		jobRepo:       jobRepo,
 		executionRepo: executionRepo,
 		redis:         redisClient,
 		executor:      httpExecutor,
+		validatorCfg:  validatorCfg,
 	}
 }
 
@@ -145,6 +149,7 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 		[]byte(message.Payload),
 		job.ID.String(),
 		attempt,
+		p.validatorCfg,
 	)
 
 	finishedAt := time.Now().UTC()

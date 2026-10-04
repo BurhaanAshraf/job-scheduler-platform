@@ -16,6 +16,7 @@ import (
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/redisclient"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/validator"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/worker"
 	"github.com/google/uuid"
 )
@@ -72,11 +73,14 @@ func run() int {
 	jobRepo := repository.NewJobRepository(pool)
 	executionRepo := repository.NewJobExecutionRepository(pool)
 
+	// Allow private IPs for testing via environment variable
+	allowPrivateIPs := os.Getenv("JOB_SCHEDULER_ALLOW_PRIVATE_IPS") == "true"
 	processor := worker.NewProcessor(
 		jobRepo,
 		executionRepo,
 		redisClient,
 		executor.NewHTTPExecutor(),
+		validator.Config{AllowPrivateIPs: allowPrivateIPs},
 	)
 
 	hostname, _ := os.Hostname()

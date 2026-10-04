@@ -20,6 +20,7 @@ import (
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/retry"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -166,6 +167,7 @@ func TestProcessor_Process_SuccessUpdatesPostgresAndAcknowledges(t *testing.T) {
 		executionRepo,
 		redisClient,
 		executor.NewHTTPExecutor(),
+		validator.Config{AllowPrivateIPs: true},
 	)
 
 	if err := processor.Process(ctx, message); err != nil {
@@ -334,6 +336,7 @@ func TestProcessor_Process_FailureSchedulesRetry(t *testing.T) {
 		executionRepo,
 		redisClient,
 		executor.NewHTTPExecutor(),
+		validator.Config{AllowPrivateIPs: true},
 	)
 
 	beforeProcess := time.Now().UTC()
@@ -573,6 +576,7 @@ func TestProcessor_ClaimsAndProcessesStaleMessage(t *testing.T) {
 		executionRepo,
 		redisClient,
 		executor.NewHTTPExecutor(),
+		validator.Config{AllowPrivateIPs: true},
 	)
 
 	if err := processor.Process(ctx, claimed[0]); err != nil {
@@ -714,7 +718,7 @@ func TestWorker_EndToEndJobExecution(t *testing.T) {
 		t.Fatalf("failed to enqueue job: %v", err)
 	}
 	executionRepo := repository.NewJobExecutionRepository(pool)
-	processor := NewProcessor(jobRepo, executionRepo, redisClient, executor.NewHTTPExecutor())
+	processor := NewProcessor(jobRepo, executionRepo, redisClient, executor.NewHTTPExecutor(), validator.Config{AllowPrivateIPs: true})
 
 	worker := NewWorker(redisClient, processor, "worker-e2e-"+uuid.NewString(), slog.Default())
 
@@ -867,6 +871,7 @@ func TestProcessor_Process_ExhaustedJobMovesToDeadLetter(t *testing.T) {
 		executionRepo,
 		redisClient,
 		executor.NewHTTPExecutor(),
+		validator.Config{AllowPrivateIPs: true},
 	)
 
 	var finalMessageID string
@@ -1270,6 +1275,7 @@ func TestWorker_AttemptIncrementSurvivesCrash(t *testing.T) {
 		os.Environ(),
 		"JOB_SCHEDULER_DB_DSN="+dsn,
 		"REDIS_ADDR="+redisAddr,
+		"JOB_SCHEDULER_ALLOW_PRIVATE_IPS=true",
 	)
 
 	if err := workerCmd.Start(); err != nil {
@@ -1458,6 +1464,7 @@ func TestProcessor_Process_StaleMessageIsAcknowledgedWithoutExecution(t *testing
 		executionRepo,
 		redisClient,
 		executor.NewHTTPExecutor(),
+		validator.Config{AllowPrivateIPs: true},
 	)
 
 	if err := processor.Process(ctx, firstMessages[0]); err != nil {

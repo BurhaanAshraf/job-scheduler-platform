@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/validator"
 )
 
 func TestHTTPExecutor_ExecutesCallbackWithExactPayload(t *testing.T) {
@@ -43,7 +45,7 @@ func TestHTTPExecutor_ExecutesCallbackWithExactPayload(t *testing.T) {
 
 	executor := NewHTTPExecutor()
 
-	responseCode, err := executor.Execute(context.Background(), server.URL, payload)
+	responseCode, err := executor.ExecuteJob(context.Background(), server.URL, payload, "", 0, validator.Config{AllowPrivateIPs: true})
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
@@ -61,10 +63,12 @@ func TestHTTPExecutor_TreatsNon2xxAsFailure(t *testing.T) {
 
 	executor := NewHTTPExecutor()
 
-	responseCode, err := executor.Execute(
+	responseCode, err := executor.ExecuteJob(
 		context.Background(),
 		server.URL,
 		[]byte(`{"hello":"world"}`),
+		"", 0,
+		validator.Config{AllowPrivateIPs: true},
 	)
 
 	if err == nil {

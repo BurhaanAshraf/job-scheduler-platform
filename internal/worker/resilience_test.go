@@ -15,6 +15,7 @@ import (
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/executor"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/validator"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -99,7 +100,7 @@ func TestWorker_StaysAliveAfterFailure(t *testing.T) {
 		t.Fatalf("enqueue good: %v", err)
 	}
 
-	processor := NewProcessor(jobRepo, execRepo, redisClient, executor.NewHTTPExecutor())
+	processor := NewProcessor(jobRepo, execRepo, redisClient, executor.NewHTTPExecutor(), validator.Config{AllowPrivateIPs: true})
 	w := NewWorker(redisClient, processor, "stayalive-"+uuid.NewString(), slog.Default())
 	wctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -226,7 +227,7 @@ func TestProcessor_SuccessLeavesZeroPending(t *testing.T) {
 	if err != nil || len(msgs) != 1 {
 		t.Fatalf("read: %v %d", err, len(msgs))
 	}
-	processor := NewProcessor(jobRepo, execRepo, redisClient, executor.NewHTTPExecutor())
+	processor := NewProcessor(jobRepo, execRepo, redisClient, executor.NewHTTPExecutor(), validator.Config{AllowPrivateIPs: true})
 	if err := processor.Process(ctx, msgs[0]); err != nil {
 		t.Fatalf("process: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestProcessor_StaleRunningWithoutCompletionRedrives(t *testing.T) {
 		t.Fatalf("create execution: %v", err)
 	}
 
-	processor := NewProcessor(jobRepo, execRepo, redisClient, executor.NewHTTPExecutor())
+	processor := NewProcessor(jobRepo, execRepo, redisClient, executor.NewHTTPExecutor(), validator.Config{AllowPrivateIPs: true})
 	stale := stream.Message{ID: "fake-stale-1", JobID: jobID.String(), Payload: string(payload), QueueGeneration: 1}
 	if _, err := stream.EnqueueDue(ctx, redisClient, jobID.String(), payload, 1); err != nil {
 		t.Fatalf("enqueue stale carrier: %v", err)
@@ -366,7 +367,7 @@ func TestProcessor_StaleRunningWithCompletionFinalizes(t *testing.T) {
 		t.Fatalf("complete: %v", err)
 	}
 
-	processor := NewProcessor(jobRepo, execRepo, redisClient, executor.NewHTTPExecutor())
+	processor := NewProcessor(jobRepo, execRepo, redisClient, executor.NewHTTPExecutor(), validator.Config{AllowPrivateIPs: true})
 	if _, err := stream.EnqueueDue(ctx, redisClient, jobID.String(), payload, 1); err != nil {
 		t.Fatalf("enqueue carrier: %v", err)
 	}
