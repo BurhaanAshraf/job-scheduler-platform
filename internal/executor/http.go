@@ -7,36 +7,25 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/validator"
 )
 
 const (
-	callbackTimeout       = 10 * time.Second
-	maxBodyBytes          = 1 << 20 // 1 MiB
-	maxResponseBodyBytes  = 1 << 20 // 1 MiB max response body
-	connectionTimeout     = 5 * time.Second
-	tlsHandshakeTimeout   = 5 * time.Second
-	responseHeaderTimeout = 10 * time.Second
+	callbackTimeout      = 10 * time.Second
+	maxResponseBodyBytes = 1 << 20 // 1 MiB max response body
+	maxRedirects         = 3
 )
 
-type HTTPExecutor struct {
-	client *http.Client
-}
+type HTTPExecutor struct{}
 
+// NewHTTPExecutor builds an executor. Per-request clients are constructed in
+// ExecuteJob with a pinned, SSRF-validating transport, so there is no shared
+// client to keep here.
 func NewHTTPExecutor() *HTTPExecutor {
-	return &HTTPExecutor{
-		client: &http.Client{
-			Timeout: callbackTimeout,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				if len(via) >= 3 {
-					return http.ErrUseLastResponse
-				}
-				return nil
-			},
-		},
-	}
+	return &HTTPExecutor{}
 }
 
 func (e *HTTPExecutor) Execute(ctx context.Context, callbackURL string, payload []byte) (int, error) {
@@ -44,24 +33,38 @@ func (e *HTTPExecutor) Execute(ctx context.Context, callbackURL string, payload 
 }
 
 func (e *HTTPExecutor) ExecuteJob(ctx context.Context, callbackURL string, payload []byte, jobID string, attempt int, validatorCfg validator.Config) (int, error) {
-	// Validate the callback URL before making the request (SSRF + DNS rebinding protection)
-	_, err := validator.ValidateCallbackURL(ctx, callbackURL, validatorCfg)
+	// Single validation: CreateValidatingTransport validates once and pins
+	// the resolved IPs in the dialer (DNS-rebinding protection). A separate
+	// pre-validation pass would resolve DNS twice and reopen the
+	// check-time/connect-time TOCTOU gap.
+	transport, validated, err := validator.CreateValidatingTransport(ctx, callbackURL, validatorCfg)
 	if err != nil {
 		return 0, fmt.Errorf("callback URL validation failed: %w", err)
-	}
-
-	// Create a transport with the validated IPs to prevent DNS rebinding
-	transport, _, err := validator.CreateValidatingTransport(ctx, callbackURL, validatorCfg)
-	if err != nil {
-		return 0, fmt.Errorf("create validating transport: %w", err)
 	}
 
 	client := &http.Client{
 		Transport: transport,
 		Timeout:   callbackTimeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 3 {
+			if len(via) >= maxRedirects {
 				return http.ErrUseLastResponse
+			}
+			// Only method-preserving redirects (307/308) may be followed.
+			// Go silently rewrites POST→GET on 301/302/303 and drops the
+			// payload: delivering nothing and recording success would be
+			// worse than failing loudly (and retrying). Detect the
+			// downgrade by comparing methods instead of status codes.
+			if req.Method != via[0].Method {
+				return fmt.Errorf("refusing redirect that changes method %s→%s", via[0].Method, req.Method)
+			}
+			// The SSRF check covered only the original URL, and the
+			// pinned dialer only knows the original IPs: only same-host
+			// redirects are safe to follow. Anything else fails closed.
+			if !equalHost(req.URL.Hostname(), validated.ValidatedHost) {
+				return fmt.Errorf("refusing cross-host redirect to %q", req.URL.Hostname())
+			}
+			if _, err := validator.ValidateCallbackURL(req.Context(), req.URL.String(), validatorCfg); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -92,9 +95,16 @@ func (e *HTTPExecutor) ExecuteJob(ctx context.Context, callbackURL string, paylo
 
 	defer func() { _ = resp.Body.Close() }()
 
-	// Read response body with size limit to prevent OOM
-	limitedBody := io.LimitReader(resp.Body, maxResponseBodyBytes)
-	_, _ = io.Copy(io.Discard, limitedBody)
+	// Drain at most 1 MiB to prevent OOM; error out on oversized bodies
+	// instead of truncating silently, so a 100 MB "200 OK" fails loudly
+	// (and retries) rather than recording a false success.
+	n, _ := io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBodyBytes+1))
+	if n > maxResponseBodyBytes {
+		return resp.StatusCode, fmt.Errorf(
+			"callback response body exceeds %d bytes",
+			maxResponseBodyBytes,
+		)
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return resp.StatusCode, fmt.Errorf(
@@ -104,4 +114,14 @@ func (e *HTTPExecutor) ExecuteJob(ctx context.Context, callbackURL string, paylo
 	}
 
 	return resp.StatusCode, nil
+}
+
+// equalHost compares DNS names case-insensitively, ignoring a trailing dot
+// (absolute FQDN form), so redirect-target checks cannot be bypassed with
+// "Example.COM." style aliases.
+func equalHost(a, b string) bool {
+	normalize := func(s string) string {
+		return strings.ToLower(strings.TrimSuffix(s, "."))
+	}
+	return normalize(a) == normalize(b)
 }

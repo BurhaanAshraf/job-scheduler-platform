@@ -233,3 +233,42 @@ func TestResolveHost(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateCallbackURL_BlockedHostAliases(t *testing.T) {
+	ctx := context.Background()
+	// Offline-safe: rejected by the hostname blocklist, no DNS needed.
+	for _, raw := range []string{
+		"http://host.docker.internal/hook",
+		"http://localhost.localdomain/hook",
+		"http://LOCALHOST/hook",
+		"http://localhost./hook",
+		"http://metadata.google.internal./hook",
+	} {
+		if _, err := ValidateCallbackURL(ctx, raw); err == nil {
+			t.Errorf("%q: want blocklist rejection, got nil", raw)
+		}
+	}
+}
+
+func TestValidateCallbackURL_UnspecifiedAddressesRejected(t *testing.T) {
+	ctx := context.Background()
+	// Literal IPs resolve without DNS; both must hit the private CIDRs.
+	for _, raw := range []string{
+		"http://0.0.0.0/hook",
+		"http://[::]/hook",
+	} {
+		_, err := ValidateCallbackURL(ctx, raw)
+		if err == nil {
+			t.Errorf("%q: want private-address rejection, got nil", raw)
+		}
+	}
+	// Explicit opt-in still allows them (dev/demo sink use case).
+	for _, raw := range []string{
+		"http://0.0.0.0/hook",
+		"http://[::]/hook",
+	} {
+		if _, err := ValidateCallbackURL(ctx, raw, Config{AllowPrivateIPs: true}); err != nil {
+			t.Errorf("%q with AllowPrivateIPs: want nil, got %v", raw, err)
+		}
+	}
+}

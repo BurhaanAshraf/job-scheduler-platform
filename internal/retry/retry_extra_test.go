@@ -42,7 +42,10 @@ func TestNextRunAt(t *testing.T) {
 	if !got.After(now) {
 		t.Fatalf("NextRunAt not in future: %v", got)
 	}
-	if want := now.Add(Backoff(3)); !got.Equal(want) {
-		t.Fatalf("NextRunAt = %v, want %v", got, want)
+	// Jittered around Backoff(attempt-1): within [base/2, base] of now.
+	base := Backoff(2)
+	lower, upper := now.Add(base/2), now.Add(base)
+	if got.Before(lower) || got.After(upper.Add(time.Second)) {
+		t.Fatalf("NextRunAt = %v, want in [%v, %v]", got, lower, upper)
 	}
 }

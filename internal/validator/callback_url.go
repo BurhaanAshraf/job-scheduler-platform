@@ -33,6 +33,9 @@ type Config struct {
 var (
 	blockedHosts = map[string]struct{}{
 		"localhost":                {},
+		"localhost.localdomain":    {},
+		"host.docker.internal":     {},
+		"host.containers.internal": {},
 		"metadata.google.internal": {},
 		"169.254.169.254":          {}, // AWS metadata
 		"metadata":                 {}, // Azure metadata
@@ -44,7 +47,9 @@ var (
 		mustParseCIDR("192.168.0.0/16"),
 		mustParseCIDR("127.0.0.0/8"),
 		mustParseCIDR("169.254.0.0/16"),
+		mustParseCIDR("0.0.0.0/8"), // "this network": dials localhost on Linux
 		mustParseCIDR("::1/128"),
+		mustParseCIDR("::/128"), // unspecified: dials localhost
 		mustParseCIDR("fe80::/10"),
 		mustParseCIDR("fc00::/7"),
 	}
@@ -87,7 +92,10 @@ func ValidateCallbackURL(ctx context.Context, rawURL string, opts ...Config) (*V
 	}
 
 	hostname := parsed.Hostname()
-	if _, blocked := blockedHosts[strings.ToLower(hostname)]; blocked {
+	// Normalize before the blocklist: "LOCALHOST.", "Metadata" etc. must
+	// not slip past a case-sensitive or trailing-dot comparison.
+	normalized := strings.ToLower(strings.TrimSuffix(hostname, "."))
+	if _, blocked := blockedHosts[normalized]; blocked {
 		return nil, fmt.Errorf("%w: %s", ErrBlockedHost, hostname)
 	}
 

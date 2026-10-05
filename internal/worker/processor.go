@@ -205,7 +205,7 @@ func (p *Processor) Process(ctx context.Context, message stream.Message) error {
 		lastError := executeErr.Error()
 
 		if attempt < job.MaxAttempts {
-			nextRunAt := time.Now().UTC().Add(retry.Backoff(attempt))
+			nextRunAt := retry.NextRunAt(time.Now().UTC(), attempt)
 			newGeneration := job.QueueGeneration + 1
 
 			// Enqueue first with the next generation; DB still holds the

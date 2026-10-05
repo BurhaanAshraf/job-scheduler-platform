@@ -48,5 +48,5 @@ func BackoffWithJitter(attempt int) time.Duration {
 }
 
 func NextRunAt(now time.Time, attempt int) time.Time {
-	return now.Add(Backoff(attempt))
+	return now.Add(BackoffWithJitter(attempt))
 }

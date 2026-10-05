@@ -13,7 +13,10 @@ local job_ids = redis.call(
 	"ZRANGEBYSCORE",
 	KEYS[1],
 	"-inf",
-	ARGV[1]
+	ARGV[1],
+	"LIMIT",
+	0,
+	500
 )
 
 local promoted = {}
@@ -25,27 +28,39 @@ for _, job_id in ipairs(job_ids) do
 	)
 
 	if scheduled then
-		local data = cjson.decode(scheduled)
+		local ok, data = pcall(cjson.decode, scheduled)
+		if ok then
+			redis.call(
+				"XADD",
+				KEYS[3],
+				"MAXLEN",
+				"~",
+				"100000",
+				"*",
+				"job_id",
+				job_id,
+				"payload",
+				data.payload,
+				"queue_generation",
+				tostring(data.queue_generation)
+			)
 
-		redis.call(
-			"XADD",
-			KEYS[3],
-			"MAXLEN",
-			"~",
-			"100000",
-			"*",
-			"job_id",
-			job_id,
-			"payload",
-			data.payload,
-			"queue_generation",
-			tostring(data.queue_generation)
-		)
+			redis.call("ZREM", KEYS[1], job_id)
 
+			redis.call("HDEL", KEYS[2], job_id)
+			table.insert(promoted, job_id)
+		else
+			-- Poison entry (corrupt JSON): drop it so one bad payload
+			-- cannot head-of-line-block every promotion tick. The DB row
+			-- still exists for reconciliation; the error surfaces via the
+			-- caller's failed-promotion log, not a silent stall.
+			redis.call("ZREM", KEYS[1], job_id)
+			redis.call("HDEL", KEYS[2], job_id)
+		end
+	else
+		-- Orphaned ZSET member (payload lost via eviction/manual DEL):
+		-- remove it so it is not returned by every future tick forever.
 		redis.call("ZREM", KEYS[1], job_id)
-
-		redis.call("HDEL", KEYS[2], job_id)
-		table.insert(promoted, job_id)
 	end
 end
 

@@ -387,7 +387,7 @@ func TestProcessor_Process_FailureSchedulesRetry(t *testing.T) {
 		t.Fatalf("expected job in scheduled set: %v", err)
 	}
 
-	expectedRunAt := beforeProcess.Add(retry.Backoff(1))
+	expectedRunAt := retry.NextRunAt(beforeProcess, 1)
 	actualRunAt := time.Unix(int64(scheduledScore), 0)
 
 	if actualRunAt.Before(expectedRunAt.Add(-1*time.Second)) ||
