@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -67,6 +68,9 @@ func readBody(w http.ResponseWriter, r *http.Request) (body []byte, trunc, ok bo
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
+		os.Exit(runHealthcheck())
+	}
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	sink := &Sink{}
 	if n := os.Getenv("SINK_FAIL_FIRST"); n != "" {
@@ -144,4 +148,32 @@ func main() {
 		log.Error("sink stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+// runHealthcheck probes the local /hits endpoint so the compose
+// HEALTHCHECK works on the scratch image (no shell/curl available).
+func runHealthcheck() int {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%s/hits", port)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "hits status %d\n", resp.StatusCode)
+		return 1
+	}
+	return 0
 }

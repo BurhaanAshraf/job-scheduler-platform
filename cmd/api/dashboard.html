@@ -5,471 +5,457 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Job Scheduler Dashboard</title>
     <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
+        :root {
+            --bg: #f4f6fa;
+            --card: #ffffff;
+            --border: #e5e7eb;
+            --text: #111827;
+            --muted: #6b7280;
+            --accent: #2563eb;
+            --accent-dark: #1d4ed8;
+            --ok: #166534;
+            --ok-bg: #dcfce7;
+            --warn: #92400e;
+            --warn-bg: #fef3c7;
+            --bad: #991b1b;
+            --bad-bg: #fee2e2;
         }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background: #f5f6f8;
-            color: #1a1a2e;
+            background: var(--bg);
+            color: var(--text);
             line-height: 1.6;
         }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 24px;
+        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+        header.topbar {
+            display: flex; justify-content: space-between; align-items: center;
+            gap: 12px; flex-wrap: wrap;
+            margin-bottom: 8px; padding-bottom: 16px;
+            border-bottom: 1px solid var(--border);
         }
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 24px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid #e0e0e0;
+        h1 { font-size: 1.5rem; font-weight: 650; }
+        .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 20px; }
+        .subtitle a { color: var(--accent); text-decoration: none; }
+        .subtitle a:hover { text-decoration: underline; }
+        .header-actions { display: flex; gap: 8px; align-items: center; }
+        .btn {
+            border: 1px solid var(--border); background: var(--card);
+            padding: 9px 16px; border-radius: 8px; font-size: 0.85rem;
+            font-weight: 550; cursor: pointer; transition: background 0.15s, border-color 0.15s;
         }
-        h1 {
-            font-size: 1.75rem;
-            font-weight: 600;
-            color: #1a1a2e;
+        .btn:hover { background: #f3f4f6; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+        .btn-primary:hover { background: var(--accent-dark); }
+        .poll-dot {
+            display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+            background: #10b981; margin-right: 6px; vertical-align: 1px;
         }
-        .refresh-btn {
-            background: #2563eb;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 6px;
-            font-size: 0.875rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-        .refresh-btn:hover { background: #1d4ed8; }
-        .refresh-btn:disabled { background: #93c5fd; cursor: not-allowed; }
-
+        .poll-dot.paused { background: #9ca3af; }
         .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 14px; margin-bottom: 22px;
         }
         .stat-card {
-            background: white;
-            border-radius: 10px;
-            padding: 20px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-            border: 1px solid #e8e8e8;
+            background: var(--card); border-radius: 12px; padding: 18px 20px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid var(--border);
         }
         .stat-label {
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #6b7280;
-            margin-bottom: 8px;
+            font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+            color: var(--muted); margin-bottom: 6px; font-weight: 600;
         }
-        .stat-value {
-            font-size: 2.5rem;
-            font-weight: 700;
-            color: #1a1a2e;
+        .stat-value { font-size: 2.2rem; font-weight: 700; line-height: 1.1; }
+        .stat-value.warning { color: #d97706; }
+        .stat-value.danger { color: #dc2626; }
+        .stat-sub { font-size: 0.75rem; color: var(--muted); margin-top: 4px; }
+        .toolbar {
+            display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+            margin-bottom: 12px;
         }
-        .stat-value.warning { color: #f59e0b; }
-        .stat-value.danger { color: #ef4444; }
-
-        .section-title {
-            font-size: 1.125rem;
-            font-weight: 600;
-            margin-bottom: 16px;
-            color: #1a1a2e;
+        .toolbar select, .toolbar input {
+            border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+            font-size: 0.85rem; background: var(--card);
         }
-
+        .section-title { font-size: 1.05rem; font-weight: 650; margin: 22px 0 12px; }
         .table-container {
-            background: white;
-            border-radius: 10px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-            border: 1px solid #e8e8e8;
-            overflow: hidden;
+            background: var(--card); border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid var(--border);
+            overflow-x: auto;
         }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th, td {
-            padding: 14px 16px;
-            text-align: left;
-            border-bottom: 1px solid #f0f0f0;
-        }
+        table { width: 100%; border-collapse: collapse; min-width: 640px; }
+        th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid #f0f0f0; }
         th {
-            background: #f9fafb;
-            font-weight: 600;
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #6b7280;
+            background: #f9fafb; font-weight: 600; font-size: 0.72rem;
+            text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
         }
         tr:last-child td { border-bottom: none; }
-        tr:hover td { background: #f9fafb; }
-
+        tbody tr:hover td { background: #f9fafb; }
         .status-badge {
-            display: inline-flex;
-            align-items: center;
-            padding: 4px 10px;
-            border-radius: 9999px;
-            font-size: 0.7rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.025em;
+            display: inline-flex; align-items: center; padding: 3px 10px;
+            border-radius: 9999px; font-size: 0.7rem; font-weight: 650;
+            text-transform: uppercase; letter-spacing: 0.03em;
         }
-        .status-pending { background: #fef3c7; color: #92400e; }
+        .status-pending { background: var(--warn-bg); color: var(--warn); }
         .status-scheduled { background: #dbeafe; color: #1e40af; }
         .status-running { background: #e0e7ff; color: #3730a3; }
-        .status-done { background: #dcfce7; color: #166534; }
-        .status-dead { background: #fee2e2; color: #991b1b; }
+        .status-done { background: var(--ok-bg); color: var(--ok); }
+        .status-dead { background: var(--bad-bg); color: var(--bad); }
         .status-cancelled { background: #f3f4f6; color: #4b5563; }
-
         .btn-retry {
-            background: #2563eb;
-            color: white;
-            border: none;
-            padding: 6px 12px;
-            border-radius: 5px;
-            font-size: 0.75rem;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background 0.2s;
+            background: var(--accent); color: #fff; border: none;
+            padding: 6px 12px; border-radius: 6px; font-size: 0.75rem;
+            font-weight: 550; cursor: pointer;
         }
-        .btn-retry:hover { background: #1d4ed8; }
-        .btn-retry:disabled { background: #93c5fd; cursor: not-allowed; }
-        .btn-retry.loading { opacity: 0.7; }
-
-        .empty-state {
-            text-align: center;
-            padding: 48px 24px;
-            color: #6b7280;
+        .btn-retry:hover { background: var(--accent-dark); }
+        .btn-retry:disabled { opacity: 0.6; cursor: not-allowed; }
+        .empty-state { text-align: center; padding: 40px 20px; color: var(--muted); }
+        .locked-state {
+            text-align: center; padding: 60px 20px; color: var(--muted);
+            background: var(--card); border: 1px dashed var(--border); border-radius: 12px;
         }
-        .empty-state svg { width: 48px; height: 48px; margin-bottom: 12px; opacity: 0.5; }
-
-        .timestamp {
-            font-size: 0.75rem;
-            color: #6b7280;
-            font-family: monospace;
-        }
-        .job-id {
-            font-family: monospace;
-            font-size: 0.8rem;
-            color: #374151;
-        }
+        .timestamp { font-size: 0.75rem; color: var(--muted); font-family: ui-monospace, monospace; white-space: nowrap; }
+        .job-id { font-family: ui-monospace, monospace; font-size: 0.78rem; color: #374151; white-space: nowrap; }
         .attempts-badge {
-            background: #f3f4f6;
-            color: #374151;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.7rem;
-            font-weight: 500;
+            background: #f3f4f6; color: #374151; padding: 2px 8px;
+            border-radius: 4px; font-size: 0.72rem; font-weight: 550; white-space: nowrap;
         }
-        .error-tooltip {
-            position: relative;
-            cursor: help;
+        .error-text {
+            max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            display: inline-block; vertical-align: bottom; font-size: 0.8rem; color: #7f1d1d;
         }
-        .error-tooltip:hover::after {
-            content: attr(data-error);
-            position: absolute;
-            bottom: 100%;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #1f2937;
-            color: white;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 0.7rem;
-            white-space: nowrap;
-            max-width: 300px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            z-index: 10;
-            margin-bottom: 4px;
-        }
-
+        footer { margin-top: 28px; color: var(--muted); font-size: 0.78rem; text-align: center; }
+        footer a { color: var(--accent); text-decoration: none; }
         @media (max-width: 768px) {
-            .container { padding: 16px; }
+            .container { padding: 14px; }
             .stats-grid { grid-template-columns: 1fr 1fr; }
-            .stat-value { font-size: 2rem; }
-            table { font-size: 0.8rem; }
-            th, td { padding: 10px 12px; }
+            .stat-value { font-size: 1.7rem; }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <header>
-            <h1>Job Scheduler Dashboard</h1>
-            <button class="refresh-btn" id="refreshBtn" onclick="loadAll()">
-                <span id="btnText">Refresh</span>
-                <span id="btnSpinner" style="display:none;">⟳</span>
-            </button>
+        <header class="topbar">
+            <h1>Job Scheduler</h1>
+            <div class="header-actions">
+                <span class="timestamp" id="pollState"><span class="poll-dot" id="pollDot"></span><span id="pollText">live</span></span>
+                <button class="btn btn-primary" id="refreshBtn">Refresh</button>
+                <button class="btn" id="signOutBtn" title="Forget the stored API key">Sign out</button>
+            </div>
         </header>
+        <p class="subtitle">
+            Queue, jobs and dead letters at a glance. Auto-refreshes every 5s.
+            API reference: <a href="/docs">/docs</a> &middot;
+            <a href="/metrics">/metrics</a> &middot; <a href="/healthz">/healthz</a>
+        </p>
 
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">Queue Depth</div>
-                <div class="stat-value" id="queueDepth">-</div>
+        <div id="lockedView" class="locked-state" style="display:none;">
+            <p><strong>API key required.</strong></p>
+            <p style="margin:8px 0 16px;">The dashboard calls the same authenticated API as any client.</p>
+            <button class="btn btn-primary" id="unlockBtn">Enter API key</button>
+        </div>
+
+        <div id="liveView">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Queue Depth</div>
+                    <div class="stat-value" id="queueDepth">-</div>
+                    <div class="stat-sub" id="queueSub">ready stream backlog</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Jobs Completed</div>
+                    <div class="stat-value" id="jobsCompleted">-</div>
+                    <div class="stat-sub">lifetime counter</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Jobs Failed</div>
+                    <div class="stat-value warning" id="jobsFailed">-</div>
+                    <div class="stat-sub">execution failures (retried or dead)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Dead Letters</div>
+                    <div class="stat-value danger" id="deadLetters">-</div>
+                    <div class="stat-sub">exhausted jobs awaiting retry</div>
+                </div>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Jobs Completed</div>
-                <div class="stat-value" id="jobsCompleted">-</div>
+
+            <div class="section-title">Recent Jobs</div>
+            <div class="toolbar">
+                <select id="statusFilter" aria-label="Filter by status">
+                    <option value="">All statuses</option>
+                    <option value="pending">pending</option>
+                    <option value="scheduled">scheduled</option>
+                    <option value="running">running</option>
+                    <option value="done">done</option>
+                    <option value="dead">dead</option>
+                    <option value="cancelled">cancelled</option>
+                </select>
+                <input id="typeFilter" type="search" placeholder="Filter by type or id…" aria-label="Filter by type or id">
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Jobs Failed</div>
-                <div class="stat-value warning" id="jobsFailed">-</div>
+            <div class="table-container">
+                <table id="jobsTable">
+                    <thead>
+                        <tr><th>ID</th><th>Type</th><th>Status</th><th>Attempts</th><th>Updated</th></tr>
+                    </thead>
+                    <tbody id="jobsBody"></tbody>
+                </table>
+                <div class="empty-state" id="jobsEmpty" style="display:none;"><p>No jobs match.</p></div>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Dead Letters</div>
-                <div class="stat-value danger" id="deadLetters">-</div>
+
+            <div class="section-title">Dead Letters</div>
+            <div class="table-container">
+                <table id="dlqTable">
+                    <thead>
+                        <tr><th>ID</th><th>Type</th><th>Error</th><th>Attempts</th><th>Updated</th><th>Action</th></tr>
+                    </thead>
+                    <tbody id="dlqBody"></tbody>
+                </table>
+                <div class="empty-state" id="dlqEmpty" style="display:none;"><p>No dead letters — great job!</p></div>
             </div>
         </div>
 
-        <div class="section-title">Recent Jobs</div>
-        <div class="table-container" id="jobsTableContainer">
-            <table id="jobsTable">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Type</th>
-                        <th>Status</th>
-                        <th>Attempts</th>
-                        <th>Updated</th>
-                    </tr>
-                </thead>
-                <tbody id="jobsBody"></tbody>
-            </table>
-            <div class="empty-state" id="jobsEmpty" style="display:none;">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                </svg>
-                <p>No jobs found</p>
-            </div>
-        </div>
-
-        <div class="section-title" style="margin-top: 24px;">Dead Letters</div>
-        <div class="table-container" id="dlqTableContainer">
-            <table id="dlqTable">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Type</th>
-                        <th>Error</th>
-                        <th>Attempts</th>
-                        <th>Updated</th>
-                        <th>Action</th>
-                    </tr>
-                </thead>
-                <tbody id="dlqBody"></tbody>
-            </table>
-            <div class="empty-state" id="dlqEmpty" style="display:none;">
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-                <p>No dead letters - great job!</p>
-            </div>
-        </div>
+        <footer>Job Scheduler Platform &middot; <span id="lastUpdated">never refreshed</span></footer>
     </div>
 
     <script>
+        'use strict';
         const API_BASE = '/v1';
-        const POLL_INTERVAL = 5000; // 5 seconds
+        const POLL_INTERVAL = 5000;
+        const KEY_NAME = 'dashboard_api_key';
         let pollTimer = null;
+        let recentJobsCache = [];
 
-        function showLoading(btn) {
-            btn.disabled = true;
-            document.getElementById('btnText').style.display = 'none';
-            document.getElementById('btnSpinner').style.display = 'inline';
+        // --- safe DOM helpers (no innerHTML with server data) ---
+        function el(tag, text, cls) {
+            const n = document.createElement(tag);
+            if (cls) n.className = cls;
+            if (text !== undefined && text !== null) n.textContent = text;
+            return n;
         }
-        function hideLoading(btn) {
-            btn.disabled = false;
-            document.getElementById('btnText').style.display = 'inline';
-            document.getElementById('btnSpinner').style.display = 'none';
-        }
-
-        async function fetchJSON(url) {
-            const token = localStorage.getItem('dashboard_api_key') || '';
-            const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
-            const res = await fetch(url, { headers });
-            if (!res.ok) {
-                if (res.status === 401) {
-                    promptForAPIKey();
-                    throw new Error('Unauthorized');
-                }
-                throw new Error(`HTTP ${res.status}`);
-            }
-            return res.json();
+        function statusBadge(status) {
+            const s = el('span', status, 'status-badge status-' + status);
+            return s;
         }
 
+        // --- auth ---
+        function getKey() { return sessionStorage.getItem(KEY_NAME) || ''; }
+        function setKey(k) { sessionStorage.setItem(KEY_NAME, k); }
+        function clearKey() { sessionStorage.removeItem(KEY_NAME); }
+        function authHeaders() {
+            const t = getKey();
+            return t ? { 'Authorization': 'Bearer ' + t } : {};
+        }
         function promptForAPIKey() {
             const key = prompt('Enter your API key to access the dashboard:');
-            if (key) {
-                localStorage.setItem('dashboard_api_key', key);
+            if (key && key.trim()) {
+                setKey(key.trim());
+                showLive();
                 loadAll();
+            } else {
+                showLocked();
             }
         }
+        function showLocked() {
+            document.getElementById('lockedView').style.display = 'block';
+            document.getElementById('liveView').style.display = 'none';
+            stopPolling();
+            setPollState(false);
+        }
+        function showLive() {
+            document.getElementById('lockedView').style.display = 'none';
+            document.getElementById('liveView').style.display = 'block';
+            startPolling();
+        }
 
+        // --- fetching ---
+        async function fetchJSON(url) {
+            const res = await fetch(url, { headers: authHeaders() });
+            if (res.status === 401) {
+                showLocked();
+                throw new Error('Unauthorized — API key missing or invalid');
+            }
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        }
+        async function fetchText(url) {
+            // /metrics is Prometheus text, not JSON — never res.json() it.
+            const res = await fetch(url);
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.text();
+        }
+        function parsePrometheus(text) {
+            const out = {};
+            for (const line of text.split('\n')) {
+                const t = line.trim();
+                if (!t || t.startsWith('#')) continue;
+                const sp = t.indexOf(' ');
+                if (sp < 0) continue;
+                const name = t.slice(0, sp);
+                const v = parseFloat(t.slice(sp + 1));
+                if (!Number.isNaN(v)) out[name] = v;
+            }
+            return out;
+        }
+
+        // --- loaders ---
+        async function loadMetrics() {
+            const m = parsePrometheus(await fetchText('/metrics'));
+            setStat('queueDepth', m.queue_depth);
+            setStat('jobsCompleted', m.jobs_completed_total);
+            setStat('jobsFailed', m.jobs_failed_total);
+        }
+        function setStat(id, v) {
+            document.getElementById(id).textContent = (v === undefined || v === null) ? '-' : String(v);
+        }
+        function byUpdatedDesc(a, b) {
+            return new Date(b.updated_at) - new Date(a.updated_at);
+        }
+        async function loadJobs() {
+            // The list API returns oldest-first; sort client-side so the
+            // dashboard shows the most recently updated jobs first.
+            const jobs = await fetchJSON(API_BASE + '/jobs?limit=100');
+            recentJobsCache = (jobs || []).slice().sort(byUpdatedDesc);
+            renderJobs();
+        }
+        async function loadDeadLetters() {
+            const jobs = await fetchJSON(API_BASE + '/dead-letters?limit=100');
+            const list = (jobs || []).slice().sort(byUpdatedDesc);
+            setStat('deadLetters', list.length);
+            const tbody = document.getElementById('dlqBody');
+            tbody.replaceChildren();
+            document.getElementById('dlqTable').style.display = list.length ? 'table' : 'none';
+            document.getElementById('dlqEmpty').style.display = list.length ? 'none' : 'block';
+            for (const job of list.slice(0, 10)) tbody.appendChild(dlqRow(job));
+        }
+        function currentFilter() {
+            return {
+                status: document.getElementById('statusFilter').value,
+                text: document.getElementById('typeFilter').value.trim().toLowerCase()
+            };
+        }
+        function renderJobs() {
+            const f = currentFilter();
+            const rows = recentJobsCache.filter(j =>
+                (!f.status || j.status === f.status) &&
+                (!f.text || (j.type || '').toLowerCase().includes(f.text) ||
+                             (j.id || '').toLowerCase().includes(f.text))
+            ).slice(0, 10);
+            const tbody = document.getElementById('jobsBody');
+            tbody.replaceChildren();
+            document.getElementById('jobsTable').style.display = rows.length ? 'table' : 'none';
+            document.getElementById('jobsEmpty').style.display = rows.length ? 'none' : 'block';
+            for (const job of rows) tbody.appendChild(jobRow(job));
+        }
+        function jobRow(job) {
+            const tr = document.createElement('tr');
+            tr.appendChild(el('td')).appendChild(el('span', shortId(job.id), 'job-id'));
+            tr.appendChild(el('td', job.type || '-'));
+            const tdS = el('td'); tdS.appendChild(statusBadge(job.status)); tr.appendChild(tdS);
+            tr.appendChild(el('td')).appendChild(
+                el('span', job.attempts + '/' + job.max_attempts, 'attempts-badge'));
+            tr.appendChild(el('td')).appendChild(
+                el('span', formatTimestamp(job.updated_at), 'timestamp'));
+            return tr;
+        }
+        function dlqRow(job) {
+            const tr = document.createElement('tr');
+            tr.appendChild(el('td')).appendChild(el('span', shortId(job.id), 'job-id'));
+            tr.appendChild(el('td', job.type || '-'));
+            const tdE = el('td');
+            const err = el('span', truncate(job.last_error || 'Unknown error', 50), 'error-text');
+            err.title = job.last_error || 'Unknown error';
+            tdE.appendChild(err); tr.appendChild(tdE);
+            tr.appendChild(el('td')).appendChild(
+                el('span', job.attempts + '/' + job.max_attempts, 'attempts-badge'));
+            tr.appendChild(el('td')).appendChild(
+                el('span', formatTimestamp(job.updated_at), 'timestamp'));
+            const tdA = el('td');
+            const btn = el('button', 'Retry', 'btn-retry');
+            btn.type = 'button';
+            btn.dataset.id = job.id;
+            btn.addEventListener('click', () => retryJob(job.id, btn));
+            tdA.appendChild(btn); tr.appendChild(tdA);
+            return tr;
+        }
+        function shortId(id) { return (id || '').slice(0, 8) + '…'; }
+        function truncate(s, n) { return s.length > n ? s.slice(0, n) + '…' : s; }
         function formatTimestamp(ts) {
             if (!ts) return '-';
-            const date = new Date(ts);
-            return date.toLocaleString();
-        }
-
-        function statusBadge(status) {
-            return `<span class="status-badge status-${status}">${status}</span>`;
-        }
-
-        async function loadMetrics() {
-            try {
-                const data = await fetchJSON('/metrics');
-                // Parse Prometheus text format
-                const lines = data.split('\n');
-                const metrics = {};
-                for (const line of lines) {
-                    if (line.startsWith('#') || !line.trim()) continue;
-                    const [name, value] = line.split(' ');
-                    metrics[name] = parseFloat(value);
-                }
-                document.getElementById('queueDepth').textContent = metrics.queue_depth ?? '-';
-                document.getElementById('jobsCompleted').textContent = metrics.jobs_completed_total ?? '-';
-                document.getElementById('jobsFailed').textContent = metrics.jobs_failed_total ?? '-';
-            } catch (e) {
-                console.warn('Failed to load metrics:', e);
-            }
-        }
-
-        async function loadJobs() {
-            try {
-                const jobs = await fetchJSON(`${API_BASE}/jobs?limit=10`);
-                const tbody = document.getElementById('jobsBody');
-                const empty = document.getElementById('jobsEmpty');
-                const table = document.getElementById('jobsTable');
-
-                if (!jobs || jobs.length === 0) {
-                    table.style.display = 'none';
-                    empty.style.display = 'block';
-                    return;
-                }
-                table.style.display = 'table';
-                empty.style.display = 'none';
-
-                tbody.innerHTML = jobs.map(job => `
-                    <tr>
-                        <td><span class="job-id">${job.id.slice(0,8)}…</span></td>
-                        <td>${job.type}</td>
-                        <td>${statusBadge(job.status)}</td>
-                        <td><span class="attempts-badge">${job.attempts}/${job.max_attempts}</span></td>
-                        <td><span class="timestamp">${formatTimestamp(job.updated_at)}</span></td>
-                    </tr>
-                `).join('');
-            } catch (e) {
-                console.error('Failed to load jobs:', e);
-            }
-        }
-
-        async function loadDeadLetters() {
-            try {
-                const jobs = await fetchJSON(`${API_BASE}/dead-letters?limit=10`);
-                const tbody = document.getElementById('dlqBody');
-                const empty = document.getElementById('dlqEmpty');
-                const table = document.getElementById('dlqTable');
-
-                if (!jobs || jobs.length === 0) {
-                    table.style.display = 'none';
-                    empty.style.display = 'block';
-                    return;
-                }
-                table.style.display = 'table';
-                empty.style.display = 'none';
-
-                tbody.innerHTML = jobs.map(job => `
-                    <tr>
-                        <td><span class="job-id">${job.id.slice(0,8)}…</span></td>
-                        <td>${job.type}</td>
-                        <td>
-                            <span class="error-tooltip" data-error="${(job.last_error || 'Unknown error').replace(/"/g, '"')}">
-                                ${(job.last_error || 'Unknown error').slice(0, 50)}${job.last_error?.length > 50 ? '…' : ''}
-                            </span>
-                        </td>
-                        <td><span class="attempts-badge">${job.attempts}/${job.max_attempts}</span></td>
-                        <td><span class="timestamp">${formatTimestamp(job.updated_at)}</span></td>
-                        <td>
-                            <button class="btn-retry" onclick="retryJob('${job.id}', this)" data-id="${job.id}">
-                                Retry
-                            </button>
-                        </td>
-                    </tr>
-                `).join('');
-            } catch (e) {
-                console.error('Failed to load dead letters:', e);
-            }
+            return new Date(ts).toLocaleString();
         }
 
         async function retryJob(jobId, btn) {
-            btn.classList.add('loading');
             btn.disabled = true;
+            const orig = btn.textContent;
             btn.textContent = 'Retrying…';
-
             try {
-                const res = await fetch(`${API_BASE}/jobs/${jobId}/retry`, {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${localStorage.getItem('dashboard_api_key')}`
-                    }
+                const res = await fetch(API_BASE + '/jobs/' + encodeURIComponent(jobId) + '/retry', {
+                    method: 'POST', headers: authHeaders()
                 });
                 if (res.ok) {
                     btn.textContent = 'Retried ✓';
-                    btn.style.background = '#10b981';
                     setTimeout(loadAll, 1000);
                 } else {
-                    const err = await res.json();
-                    alert(`Retry failed: ${err.error?.message || 'Unknown error'}`);
-                    btn.textContent = 'Retry';
-                    btn.classList.remove('loading');
+                    let msg = 'Unknown error';
+                    try { msg = (await res.json()).error?.message || msg; } catch (_) {}
+                    if (res.status === 401) showLocked();
+                    else alert('Retry failed: ' + msg);
+                    btn.textContent = orig;
                     btn.disabled = false;
                 }
             } catch (e) {
-                alert(`Retry failed: ${e.message}`);
-                btn.textContent = 'Retry';
-                btn.classList.remove('loading');
+                alert('Retry failed: ' + e.message);
+                btn.textContent = orig;
                 btn.disabled = false;
             }
         }
 
         async function loadAll() {
             const btn = document.getElementById('refreshBtn');
-            showLoading(btn);
+            btn.disabled = true;
             try {
                 await Promise.all([loadMetrics(), loadJobs(), loadDeadLetters()]);
+                document.getElementById('lastUpdated').textContent =
+                    'last refreshed ' + new Date().toLocaleTimeString();
+            } catch (e) {
+                console.warn('Dashboard refresh failed:', e);
             } finally {
-                hideLoading(btn);
+                btn.disabled = false;
             }
         }
 
+        // --- polling: exactly one timer, paused when hidden ---
         function startPolling() {
+            stopPolling();
+            setPollState(true);
             loadAll();
-            pollTimer = setInterval(loadAll, POLL_INTERVAL);
+            pollTimer = setInterval(() => { loadAll(); }, POLL_INTERVAL);
         }
         function stopPolling() {
-            if (pollTimer) clearInterval(pollTimer);
+            if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
+        }
+        function setPollState(live) {
+            document.getElementById('pollDot').className = 'poll-dot' + (live ? '' : ' paused');
+            document.getElementById('pollText').textContent = live ? 'live' : 'paused';
         }
 
-        // Check for API key on load
-        document.addEventListener('DOMContentLoaded', () => {
-            if (!localStorage.getItem('dashboard_api_key')) {
-                promptForAPIKey();
-            } else {
-                startPolling();
-            }
+        document.getElementById('refreshBtn').addEventListener('click', loadAll);
+        document.getElementById('unlockBtn').addEventListener('click', promptForAPIKey);
+        document.getElementById('signOutBtn').addEventListener('click', () => {
+            clearKey();
+            recentJobsCache = [];
+            showLocked();
         });
-
-        // Handle visibility change
+        document.getElementById('statusFilter').addEventListener('change', renderJobs);
+        document.getElementById('typeFilter').addEventListener('input', renderJobs);
         document.addEventListener('visibilitychange', () => {
-            if (document.hidden) stopPolling();
+            if (!getKey()) return;
+            if (document.hidden) { stopPolling(); setPollState(false); }
             else startPolling();
+        });
+        document.addEventListener('DOMContentLoaded', () => {
+            if (!getKey()) showLocked();
+            else showLive();
         });
     </script>
 </body>
