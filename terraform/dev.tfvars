@@ -41,4 +41,5 @@ image_tag = "dev-latest"
 # acm_certificate_arn = "arn:aws:acm:ap-south-2:123456789012:certificate/..."
 
 # Optional: SNS topic for alarms
-# sns_topic_arn = "arn:aws:sns:ap-south-2:123456789012:job-scheduler-alarms"
+# sns_topic_arn = "arn:aws:sns:ap-south-2:123456789012:job-scheduler-alarms"monthly_budget_limit_usd = 15
+

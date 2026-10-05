@@ -14,3 +14,13 @@ docs/
 README.md
 docker-compose.yml
 docker-compose.*.yml
+# Never shipped in images: infra, CI, ops tooling, PDFs, local notes.
+# NOTE: web/ and the root openapi.yaml ARE shipped (embedded by cmd/api).
+terraform/
+ecs/
+.github/
+tools/
+*.pdf
+*.md
+Caddyfile
+.git/

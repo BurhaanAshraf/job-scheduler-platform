@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
@@ -64,7 +65,19 @@ func (w *Worker) Run(ctx context.Context) error {
 				return err
 			}
 
-			w.logger.Error("failed to read job", "error", err)
+			if isNoGroupError(err) {
+				// The consumer group vanished after startup (key
+				// eviction, FLUSHDB, Redis restore/failover). Recreate
+				// it and keep going: without this the worker
+				// error-loops forever and no job is ever processed
+				// again until restart.
+				w.logger.Error("consumer group missing, recreating", "error", err)
+				if gerr := stream.EnsureConsumerGroup(ctx, w.redis); gerr != nil {
+					w.logger.Error("failed to recreate consumer group", "error", gerr)
+				}
+			} else {
+				w.logger.Error("failed to read job", "error", err)
+			}
 
 			select {
 			case <-ctx.Done():
@@ -132,4 +145,11 @@ func (w *Worker) reclaimStale(ctx context.Context) {
 			"job_id", message.JobID,
 		)
 	}
+}
+
+// isNoGroupError reports whether err is Redis's NOGROUP reply: the stream
+// exists (or not) but our consumer group is gone, so XREADGROUP can never
+// succeed until the group is recreated.
+func isNoGroupError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "NOGROUP")
 }

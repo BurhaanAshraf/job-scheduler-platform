@@ -129,3 +129,8 @@ variable "acm_certificate_arn" {
   description = "ACM certificate ARN for HTTPS (optional)"
   default     = ""
 }
+variable "monthly_budget_limit_usd" {
+  description = "Monthly AWS cost budget (USD) for the billing alarm"
+  type        = number
+  default     = 20
+}

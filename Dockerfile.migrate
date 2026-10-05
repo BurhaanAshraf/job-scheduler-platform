@@ -3,6 +3,8 @@
 # (ECS `secrets:`), keeping credentials out of the image and task args.
 FROM migrate/migrate:v4.18.1 AS m
 FROM alpine:3.20
+RUN adduser -D -u 65532 migrator
 COPY --from=m /migrate /usr/local/bin/migrate
 COPY migrations/ /migrations/
+USER 65532
 ENTRYPOINT ["sh", "-c", "migrate -path=/migrations -database=\"$DB_DSN\" up"]

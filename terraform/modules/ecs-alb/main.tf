@@ -186,8 +186,12 @@ resource "aws_ecs_task_definition" "scheduler" {
         { name = "API_PORT", value = "4000" },
         { name = "LOG_LEVEL", value = "info" },
         { name = "DB_MAX_CONNS", value = "10" },
-        { name = "SCHEDULER_POLL_INTERVAL", value = "500ms" },
-        { name = "SCHEDULER_INSTANCE_ID", value = "${var.environment}-scheduler-${var.random_suffix}" }
+        { name = "SCHEDULER_POLL_INTERVAL", value = "500ms" }
+        # NOTE: SCHEDULER_INSTANCE_ID is deliberately unset. The binary
+        # falls back to hostname-uuid (unique per task), which leader
+        # election needs to tell replicas apart. A static per-env value
+        # would give every replica the SAME identity and break failover
+        # observability (same bug compose fixed via an empty default).
       ]
       secrets = [
         { name = "JOB_SCHEDULER_DB_DSN", valueFrom = var.db_secret_arn }
@@ -529,4 +533,37 @@ resource "aws_sns_topic_policy" "alarms" {
       Resource  = aws_sns_topic.alarms.arn
     }]
   })
+}
+# Billing guardrail: monthly cost budget for this environment. Alerts at 80%
+# actual (early warning) and 100% forecasted (will exceed) to the same SNS
+# topic as the application alarms, so cost surprises page the same channel
+# as outages. Replaces the old console-created billing alarm from the
+# manual Section 13 setup with managed, reviewed infrastructure.
+resource "aws_budgets_budget" "monthly" {
+  name         = "${var.environment}-job-scheduler-monthly"
+  budget_type  = "COST"
+  limit_amount = tostring(var.monthly_budget_limit_usd)
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 80
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [aws_sns_topic.alarms.arn]
+  }
+
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "FORECASTED"
+    subscriber_sns_topic_arns = [aws_sns_topic.alarms.arn]
+  }
+
+  tags = {
+    Name        = "${var.environment}-job-scheduler-monthly"
+    Environment = var.environment
+  }
 }

@@ -14,6 +14,16 @@
 	handle /metrics {
 		reverse_proxy api:4000
 	}
+	# Interactive API docs + ops dashboard (served by the API service).
+	handle /docs {
+		reverse_proxy api:4000
+	}
+	handle /openapi.yaml {
+		reverse_proxy api:4000
+	}
+	handle /dashboard {
+		reverse_proxy api:4000
+	}
 	# Demo callback sink page + receiver. Everything else 404s at Caddy.
 	handle /hook {
 		reverse_proxy callback:8080

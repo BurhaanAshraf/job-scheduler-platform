@@ -106,3 +106,46 @@ func TestClaimRoundTrip(t *testing.T) {
 	}
 	_ = c.XAck(ctx, ReadyStream, ConsumerGroup, msgID).Err()
 }
+
+// Group loss (key eviction, FLUSHDB, Redis restore/failover) must not
+// silently drop jobs: recreating the group redelivers history already in
+// the stream instead of skipping it (the "$" behavior).
+func TestEnsureConsumerGroup_RedeliversHistoryAfterGroupLoss(t *testing.T) {
+	ctx := context.Background()
+	c := testRedisClient(t)
+	if err := c.Del(ctx, ReadyStream).Err(); err != nil {
+		t.Fatalf("clean stream: %v", err)
+	}
+	if err := EnsureConsumerGroup(ctx, c); err != nil {
+		t.Fatalf("ensure group: %v", err)
+	}
+
+	const n = 3
+	for i := 0; i < n; i++ {
+		if _, err := EnqueueDue(ctx, c, "job-history", []byte(`{}`), 1); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+	}
+
+	// Simulate group loss with history still in the stream.
+	if err := c.XGroupDestroy(ctx, ReadyStream, ConsumerGroup).Err(); err != nil {
+		t.Fatalf("destroy group: %v", err)
+	}
+	if _, err := ReadNextWithTimeout(ctx, c, "probe", time.Second); err == nil {
+		t.Fatal("expected NOGROUP after destroying the group")
+	}
+
+	if err := EnsureConsumerGroup(ctx, c); err != nil {
+		t.Fatalf("re-ensure group: %v", err)
+	}
+	msgs, err := ReadNextWithTimeout(ctx, c, "probe", 2*time.Second)
+	if err != nil {
+		t.Fatalf("read after recreate: %v", err)
+	}
+	if len(msgs) != n {
+		t.Fatalf("expected %d redelivered messages, got %d", n, len(msgs))
+	}
+	for _, m := range msgs {
+		_ = c.XAck(ctx, ReadyStream, ConsumerGroup, m.ID).Err()
+	}
+}

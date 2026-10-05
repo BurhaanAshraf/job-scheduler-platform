@@ -138,13 +138,23 @@ jobs:
       # Dockerfile fails the run here, before any merge.
       - name: Build all images
         run: docker compose build
+      # Dockerfile.migrate has no compose service, so build it explicitly:
+      # a broken migrate image must fail CI, not production deploys.
+      - name: Build migrate image
+        run: docker build -f Dockerfile.migrate .
 
-  # Terraform plan check (runs when .tf files change)
+  # Terraform checks (lint-level on every PR; full plan only when OIDC is
+  # wired via vars.AWS_OIDC_PLAN_ENABLED — per-PR path filtering is not
+  # possible at job level, so fmt+validate run on all PRs by design).
   terraform-plan:
     name: terraform plan
     runs-on: ubuntu-latest
-    # Path filter: only runs when infra changes. (The old
-    # contains(...changed_files...) expression never matched anything.)
+    permissions:
+      # Required for the OIDC-gated dev plan step below (minting the ID
+      # token via aws-actions/configure-aws-credentials). Without this,
+      # enabling AWS_OIDC_PLAN_ENABLED fails closed instead of planning.
+      id-token: write
+      contents: read
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4

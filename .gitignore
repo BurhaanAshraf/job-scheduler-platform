@@ -10,6 +10,10 @@
 # Go build output
 /bin/
 /api
+/scheduler
+/worker
+/callback
+/migrate
 
 # Terraform runtime (never commit cache, state, or plans)
 .terraform/
@@ -18,9 +22,10 @@
 *.tfplan
 crash.log
 
-# Environment files
+# Environment files (example is tracked; everything else is secret)
 .env
 .env.*
+!.env.example
 
 # Coverage
 coverage.out

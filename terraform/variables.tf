@@ -138,3 +138,8 @@ variable "worker_max_count" {
   type        = number
   default     = 6
 }
+variable "monthly_budget_limit_usd" {
+  description = "Monthly AWS cost budget (USD) for the billing alarm"
+  type        = number
+  default     = 20
+}

@@ -42,3 +42,5 @@ image_tag = "latest"
 
 # Optional: SNS topic for alarms
 # sns_topic_arn = "arn:aws:sns:ap-south-2:123456789012:job-scheduler-alarms"
+# Monthly cost guardrail (billing alarm -> same SNS topic as app alarms)
+monthly_budget_limit_usd = 40

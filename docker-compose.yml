@@ -50,6 +50,11 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
       SCHEDULER_POLL_INTERVAL: ${SCHEDULER_POLL_INTERVAL:-500ms}
+      # Dev-only: submit-time SSRF validation must accept the in-network demo
+      # sink (http://callback:8080/hook), mirroring the worker flag below.
+      # Production task definitions deliberately OMIT this, keeping the
+      # SSRF guard strict end to end.
+      JOB_SCHEDULER_ALLOW_PRIVATE_IPS: "true"
     ports:
       - "4000:4000"
     healthcheck:
@@ -144,6 +149,12 @@ services:
       SINK_FAIL_FIRST: ${SINK_FAIL_FIRST:-0}
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "/callback", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
   # TLS reverse proxy for PUBLIC hosting (docs/HOSTING.md). Off by default;

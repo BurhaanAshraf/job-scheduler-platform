@@ -28,11 +28,17 @@ type Message struct {
 }
 
 func EnsureConsumerGroup(ctx context.Context, client *redis.Client) error {
+	// Create with ID "0" (not "$") so a recreated group redelivers
+	// history already in the stream. Group loss (key eviction, FLUSHDB,
+	// Redis restore/failover) must not silently drop jobs submitted
+	// while the group was gone; worker-side dedupe (generation guard,
+	// ack-and-forget for stale deliveries) makes redelivery safe.
+	// On an empty stream (fresh MKSTREAM) "0" and "$" are identical.
 	err := client.XGroupCreateMkStream(
 		ctx,
 		ReadyStream,
 		ConsumerGroup,
-		"$",
+		"0",
 	).Err()
 
 	if err == nil {
