@@ -179,8 +179,9 @@ Error shape: `{"error":{"code":"...","message":"..."}}` with `400` validation,
 * Health: ALB target checks hit `/healthz`, which itself pings Postgres and
   Redis — a green target means the app can actually work.
 * Metrics: scrape `/metrics`; alert on `jobs_failed_total` growth and
-  sustained `queue_depth`. Prod adds CloudWatch alarms for failure rate,
-  queue backlog, ECS task health, and billing.
+  sustained `queue_depth`. Prod adds CloudWatch alarms for failure rate, API
+  5xx, queue backlog, ECS task health, plus a monthly AWS Budgets guardrail —
+  all fanning out to one SNS topic.
 * Logs: JSON with `job_id` on every leg (submit → promote → execute), so
   `grep job_id` reconstructs a job's whole lifecycle.
 
@@ -196,16 +197,37 @@ cases; `internal/scheduler` covers leader handoff; `internal/worker` covers
 flaky/slow-callback resilience. `docker compose` + the `callback` sink give a
 full local end-to-end (submit → worker POST → sink records → `done`).
 
-### Load Test Results (Local)
+### Load Test Results (Local, 2026-10-05)
 
-Sustained 4-minute test with 5 API keys (60 req/min/key limit):
-* **Requests**: 1,200 over 4 minutes
-* **Success rate**: 93% (1,117/1,200)
-* **Rate limited**: 7% (83 requests returned 429 with `Retry-After`)
-* **Latency**: p50 17 ms, p95 18 ms, p99 20 ms, max 24 ms
-* **Throughput**: 5 req/s (limited by design — 60 req/min per key)
+Sustained 4-minute soak, 5 API keys (60 req/min/key limit), workers live:
 
-Run locally: `go run loadtest5.go` (requires 5 API keys provisioned in DB).
+* **Requests**: 1,200 over 4 minutes, concurrency 10
+* **Success**: 1,185 (98.75%); **rate limited**: 15 (429 + `Retry-After`, by design)
+* **Errors**: 0 — no 5xx, no timeouts, no dropped jobs
+* **Latency**: p50 18 ms, p95 19 ms, p99 22 ms, max 34 ms
+* **Throughput**: 5 req/s (by design — 5 keys × 60 req/min)
+* Queue drained to 0; sampled jobs `done` with sink receipts.
+
+Mixed-endpoint stress (same day): 1,400 ops across 16 endpoint cases
+(submit/get/list/cancel/retry/dead-letters/cron + 400/401/404/409 paths),
+20 workers, 7 keys — **0 unexpected responses** (p99 21 ms; 1,003 correct
+429s under hammering). Endpoint E2E: **20/20 pass**.
+
+Run them (provision keys first, see above):
+
+```bash
+E2E_API_KEY=<key> go run ./tools/e2e
+STRESS_API_KEYS=<k1,k2> go run ./tools/stress             # STRESS_OPS=1000 STRESS_WORKERS=20
+LOADTEST_API_KEYS=<5 keys> go run ./tools/loadtest       # LOADTEST_MINUTES=4 LOADTEST_TOTAL=1200
+```
+
+Full tables: [`docs/load-test-results.md`](docs/load-test-results.md).
+Deep dives: [`docs/project.md`](docs/project.md) (start here),
+[`docs/api.md`](docs/api.md), [`docs/worker.md`](docs/worker.md),
+[`docs/scheduler.md`](docs/scheduler.md), [`docs/queue.md`](docs/queue.md),
+[`docs/security.md`](docs/security.md),
+[`docs/architecture.md`](docs/architecture.md),
+[`docs/comparison.md`](docs/comparison.md).
 
 ### CI Quality Gates
 
@@ -213,13 +235,13 @@ Every push runs the following automated checks via GitHub Actions:
 
 | Gate | Tool | Threshold |
 |------|------|-----------|
-| Lint | `golangci-lint` | Zero warnings (govet, staticcheck, errcheck, unused) |
+| Lint | `golangci-lint` (govet, staticcheck, errcheck, unused, misspell, unconvert, bodyclose, noctx, rowserrcheck) | Zero warnings |
 | Race-detected tests | `go test -race` | Zero data races |
 | Coverage | `go tool cover` | ≥ 70% on `internal/` packages |
 | Secret scan | `gitleaks` | Zero secrets in history |
 | Vulnerability scan | `govulncheck` | Zero high-severity CVEs in dependencies |
 | Docker build | `docker compose build` | All images build successfully |
-| Terraform plan | `terraform plan` | `fmt`+`validate` on every PR; full dev `plan` when OIDC is wired (`AWS_OIDC_PLAN_ENABLED`) |
+| Terraform plan | `terraform plan` | `fmt`+`validate` on every PR (lint-level by design); full dev `plan` when OIDC is wired (`AWS_OIDC_PLAN_ENABLED`) |
 
 All gates must pass before merge. The CI workflow is defined in `.github/workflows/ci.yml`.
 
@@ -231,7 +253,8 @@ ElastiCache reachable only from task security groups. RDS Postgres 16
 (`db.t4g.micro`), Redis 7 (`cache.t4g.micro`), 3 ECR repos, Fargate services
 (api 2, scheduler 1, worker 2–6 on CPU autoscaling), internet-facing ALB
 with `/healthz` checks, DB password in Secrets Manager (referenced by ARN),
-billing alarm in `us-east-1`.
+and a monthly cost budget ($15 dev / $40 prod) alerting to SNS at 80 %
+actual and 100 % forecasted spend.
 
 Deploys: merge to `main` → GitHub Actions assumes an OIDC-federated IAM role
 (no static keys) → builds/pushes `:sha` images → registers new task-def
@@ -243,9 +266,13 @@ Rollback = `update-service --task-definition <prev-revision>` per service.
 ```
 cmd/{api,scheduler,worker,apikey,callback}/  service entrypoints
 internal/{api,config,db,executor,health,logger,metrics,ratelimit,
-  redisclient,repository,retry,scheduler,stream,worker}/  libraries
+  redisclient,repository,retry,scheduler,stream,validator,worker}/  libraries
+tools/{e2e,stress,loadtest}/  endpoint checks, mixed-endpoint stress, sustained soak
 migrations/000001..000005  versioned schema (up/down)
-ecs/  Fargate task definitions + least-privilege IAM policies
+docs/{project,api,worker,scheduler,queue,security,architecture,comparison}.md
+  concept guides + redis-keys.md, load-test-results.md, architecture.mmd
+ecs/  legacy console task defs (Terraform is the source of truth)
+terraform/  AWS stack (networking, RDS, ElastiCache, ECR+IAM, ECS+ALB, OIDC, budgets)
 Dockerfile.*  per-service images    docker-compose.yml  local stack
 ```
 
