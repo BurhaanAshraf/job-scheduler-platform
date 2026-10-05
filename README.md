@@ -2,219 +2,226 @@
 
 [![CI](https://github.com/BurhaanAshraf/job-scheduler-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/BurhaanAshraf/job-scheduler-platform/actions/workflows/ci.yml)
 
-Durable background-job platform in Go: submit jobs over HTTP, run them now,
-later, or on cron schedules. Webhook delivery with retries, exponential
-backoff, a dead-letter queue, per-client rate limits, and Prometheus
-observability. PostgreSQL is the system of record; Redis Streams is live
-dispatch. Three stateless binaries (`api`, `scheduler`, `worker`) run on
-Docker Compose locally and on AWS ECS (Fargate) in production.
+A durable background-job platform. You submit work over HTTP, and the
+platform runs it now, later, or on a recurring schedule — delivering it to
+your own web address, retrying intelligently when delivery fails, and
+parking permanently failed work where you can inspect and re-run it.
 
-## Contents
+## What it does
 
-* [Features](#features)
-* [Architecture](#architecture)
-* [Tech stack](#tech-stack)
-* [Prerequisites](#prerequisites)
-* [Quickstart](#quickstart-local)
-* [Configuration](#configuration)
-* [API reference](#api-reference)
-* [Concepts](#concepts)
-* [Observability](#observability)
-* [Testing](#testing)
-* [Production](#production-aws)
-* [Project layout](#project-layout)
-* [Design tradeoffs](#design-tradeoffs)
-* [Troubleshooting](#troubleshooting)
-* [Contributing](#contributing)
-* [License](#license)
+Many services need work done outside the request that triggered it: send an
+email, notify a partner system, generate a nightly report. Doing that work
+inside the original request makes users wait on downstream systems and loses
+the work entirely whenever anything crashes. This platform takes that work
+as a recorded job, holds it until its time, delivers it to a web address you
+choose, retries with a growing delay when delivery fails, and gives up
+visibly — into a dead-letter list you control — instead of silently.
 
-## Features
+## Key capabilities
 
-* **Deferred + recurring work** — `run_at` one-shots, cron expressions, cancel-before-start, retry dead jobs
-* **Exactly-once effects via idempotency keys** — byte-identical replays return the same job (200); same key + different payload is a 409 conflict
-* **Durable execution** — attempts recorded per try; exhausted jobs go to the dead-letter queue (`GET /v1/dead-letters`)
-* **Webhook delivery** — 10s timeout, SSRF guard (public targets only), method-preserving redirect handling
-* **Multi-tenant auth** — bearer API keys stored as SHA-256 hashes, provisioned by CLI, revocable in Postgres
-* **Rate limiting** — 60 req/min per key, sliding window in Redis, `Retry-After` on 429
-* **Observable** — `/healthz` (dependency-checked), `/metrics` (Prometheus), structured JSON logs, CloudWatch alarms in prod
+- Run jobs immediately, at a future time, or on a recurring cron schedule.
+- Safe client retries through idempotency keys, with conflicts reported
+  rather than duplicated.
+- Automatic retries with jittered exponential backoff and a capped delay,
+  so struggling downstream systems get breathing room instead of hammering.
+- A dead-letter queue with one-action manual retry for work that exhausts
+  its attempts.
+- Per-client request quotas with clear retry guidance when quotas are hit.
+- Protection against malicious job definitions that try to reach internal
+  network addresses from the workers.
+- Health checks, Prometheus metrics, structured logs, and a built-in
+  operations dashboard with documentation served by the API itself.
 
-## Architecture
+## How a job flows through the system
 
-```mermaid
-flowchart LR
-    Client --> ALB[ALB :80]
-    ALB --> API1[api ×2]
-    ALB --> API2[api ×2]
-    API1 --> PG[(Postgres\nsystem of record)]
-    API2 --> PG
-    API1 --> RS[Redis Streams\nlive dispatch]
-    API2 --> RS
-    SCH[scheduler ×1\nleader lock] --> RS
-    SCH --> PG
-    W1[worker ×2\nautoscaled 2-6] --> RS
-    W2[worker ×2] --> RS
-    W1 --> CB[(callback URLs)]
-    W2 --> CB
-```
+A client sends a job to the API with its type, data, scheduled time, retry
+budget, idempotency key, and the web address to deliver to. The API
+authenticates the client, checks its quota, validates the submission
+including a live safety check of the delivery address, stores the job in
+PostgreSQL, and hands it to Redis for dispatch — recording that intent in
+the same database transaction so a crash can never lose it.
 
-> **Detailed architecture diagram**: See [`docs/architecture.mmd`](docs/architecture.mmd) for a full-annotated Mermaid diagram with observability, CI/CD, and network topology details.
+A single elected scheduler promotes jobs whose time has come and spawns
+instances of cron schedules. Workers claim ready jobs and post their data
+to the delivery address, recording every attempt. Success completes the job.
+Failure re-queues it after a backoff delay until its retry budget runs out,
+at which point it waits in the dead-letter list for an explicit human or
+automated retry. A background reconciler finishes any handoff a crash
+interrupted, so no committed job is ever stranded.
 
-Request path: `POST /v1/jobs` persists the job in Postgres, enqueues it in the
-`jobs:ready` stream, and returns the id. The single leader scheduler promotes
-due jobs and spawns cron instances; workers claim stream messages, POST the
-payload to `callback_url`, and record the attempt. Cron, retries, and cron
-instance spawning are all driven through the same stream, so every leg is
-visible via `job_id` correlation in the logs.
+Every step of that journey is logged under the job's identifier, so the
+full story of any job is one search away.
 
-## Tech stack
+## Project structure
 
-| Layer | Choice |
-|---|---|
-| Language | Go 1.27, stdlib `net/http` router |
-| System of record | PostgreSQL 16 (`jobs`, `job_executions`, `cron_jobs`, `api_keys`) |
-| Live dispatch | Redis 7 Streams (consumer groups) + Lua for atomic promotion |
-| Containers | Multi-stage Docker images with binary `-healthcheck` modes |
-| Local | Docker Compose (api, scheduler, worker, postgres, redis, migrate, callback sink, Caddy TLS proxy) |
-| Prod | AWS `ap-south-2`: VPC, RDS, ElastiCache, ECR, ECS Fargate, ALB, Secrets Manager, CloudWatch |
-| CI/CD | GitHub Actions: lint + race tests on every push; OIDC-federated deploy to ECS on merge to `main` |
+The repository is organized so each deployable piece and each area of
+knowledge has exactly one home.
+
+- Command entry points, one per deployable program: the public API server,
+  the scheduler, the worker pool, the API key provisioning tool, the demo
+  callback receiver, and the database migration runner.
+- Internal libraries grouped by responsibility: request handling and
+  middleware, configuration, database access, webhook delivery, health
+  reporting, logging, metrics, rate limiting, data repositories, retry
+  mathematics, scheduling and leader election, queue primitives, delivery
+  address safety checks, and job processing.
+- Versioned database migrations that move the schema forward and backward
+  in numbered steps.
+- Operational tooling for endpoint checks, mixed-endpoint stress runs, and
+  sustained load soaks.
+- Infrastructure as code describing the network, database, cache, container
+  registry and permissions, container hosting with load balancing,
+  deployment identity, and cost guardrails, with separate settings for
+  development and production environments.
+- Documentation with one guide per concept: the overall project, the API,
+  the worker, the scheduler, the queue and retry behavior, security, the
+  architecture, a market comparison, the theory behind the design, measured
+  load results, and a map of the live data structures.
 
 ## Prerequisites
 
-* Docker + Docker Compose v2
-* Go 1.27+ and `golang-migrate` (only for running outside Compose)
-* AWS CLI (only for production deploy)
+You need container tooling with Compose support, plus a terminal. That is
+all for running the full platform locally. Working on the Go code directly
+additionally needs a recent Go toolchain. Deploying to production needs
+command-line access to an AWS account.
 
-## Quickstart (local)
+## Running the project, step by step
+
+**1. Prepare your private settings.** Copy the provided example environment
+file to your own local file and choose a strong database password inside
+it. This local file is never committed and never baked into images.
 
 ```bash
-cp .env.example .env        # set a real POSTGRES_PASSWORD
-docker compose up -d --build
-docker compose ps           # all services healthy (migrations run automatically)
-curl localhost:4000/healthz # {"status":"ok"}
+cp .env.example .env
+# then edit .env and set POSTGRES_PASSWORD
 ```
 
-Provision a key (raw value is shown once — save it):
+**2. Start the whole platform.** One command builds every service image,
+starts PostgreSQL and Redis with health checks, applies the database schema
+automatically, and brings up the API, scheduler, worker, and demo receiver.
+
+```bash
+docker compose up -d --build
+docker compose ps   # every service should report healthy
+```
+
+**3. Confirm the platform is awake.** A healthy answer here means both the
+database and the cache are reachable from the application.
+
+```bash
+curl localhost:4000/healthz   # {"status":"ok"}
+```
+
+**4. Create your first API key.** These commands generate a random key,
+store only its irreversible fingerprint in the database, and print the key
+exactly once — save it somewhere safe, since the original can never be
+recovered.
 
 ```bash
 RAW=$(python3 -c 'import secrets;print(secrets.token_hex(32))')
-HASH=$(python3 -c "import hashlib;print(hashlib.sha256('$RAW'.encode()).hexdigest())")
+HASH=$(python3 -c "import hashlib;print(hashlib.sha256('$RAW'.encode()).hexdigest())"
 docker compose exec -T postgres psql -U burhaan -d job_scheduler -c \
 "INSERT INTO api_keys (id, client_name, hashed_key, created_at) VALUES \
 (gen_random_uuid(), 'demo', '$HASH', NOW());"
+echo "API key: $RAW"
 ```
 
-Submit a job and watch it complete (the local sink receives the webhook):
+**5. Open the operations dashboard.** Go to
+http://localhost:4000/dashboard and enter your key when asked. You will see
+live queue numbers, recent jobs, and the dead-letter list, refreshing on its
+own every few seconds. The interactive API reference lives at
+http://localhost:4000/docs.
+
+**6. Run your first job end to end.** Submit a job addressed to the included
+demo receiver (replace the key below with yours), then watch it arrive: the
+dashboard shows it completing, and the receiver's page at
+http://localhost:8080 shows the delivery it got.
 
 ```bash
 curl -X POST localhost:4000/v1/jobs -H "Authorization: Bearer $RAW" \
   -H 'Content-Type: application/json' -d '{
     "type": "demo", "payload": {"hello":"world"},
-    "run_at": "2026-10-04T00:00:00Z", "max_attempts": 3,
+    "run_at": "2020-01-01T00:00:00Z", "max_attempts": 3,
     "idempotency_key": "demo-001",
     "callback_url": "http://callback:8080/hook"}'
-curl localhost:4000/v1/jobs/<id> -H "Authorization: Bearer $RAW"
-# {"status":"done","attempts":1,...}
 ```
 
-Repeat the POST byte-identically → `200` with the same id (idempotent).
-`GET /v1/dead-letters` lists exhausted jobs; `POST /v1/jobs/{id}/retry`
-re-queues one. Cron: `POST /v1/cron-jobs` with `cron_expression` and a
-`job_template`; disable with `PATCH /v1/cron-jobs/{id} {"enabled":false}`.
+Repeating that exact request returns the same job instead of duplicating
+it; changing anything but the key reports a conflict.
 
-## Configuration
-
-| Variable | Required | Meaning |
-|---|---|---|
-| `JOB_SCHEDULER_DB_DSN` (`DB_DSN` fallback) | yes | Postgres DSN (secret in prod, never in task defs) |
-| `REDIS_ADDR` | yes | `host:port` of Redis |
-| `REDIS_PASSWORD` | no | Empty = no auth |
-| `API_PORT` | yes | HTTP port (`4000`) |
-| `LOG_LEVEL` | no | `debug/info/warn/error` (default `info`) |
-| `DB_MAX_CONNS` | no | Pool size per service (default `10`) |
-| `SCHEDULER_POLL_INTERVAL` | no | Dispatch tick (default `500ms`) |
-
-`POSTGRES_PASSWORD` is compose-only (builds the container and the default
-DSN); app code never reads it.
-
-## API reference
-
-Auth: `Authorization: Bearer <raw-key>` on every `/v1/*` route.
-`/healthz` and `/metrics` are public.
-
-| Method & path | Meaning |
-|---|---|
-| `POST /v1/jobs` | Submit (`type`, `payload`, `run_at`, `max_attempts`, `idempotency_key`, `callback_url`) → `201` (+ `Location`-style `id`) |
-| `GET /v1/jobs/{id}` | Job status, attempts, `last_error` |
-| `GET /v1/jobs` | List/filter (paged, capped at 100) |
-| `DELETE /v1/jobs/{id}` | Cancel if unstarted (`204`), else `409` |
-| `POST /v1/jobs/{id}/retry` | Re-queue a `dead` job only |
-| `GET /v1/dead-letters` | Exhausted jobs |
-| `POST /v1/cron-jobs` | Create schedule (`cron_expression` + `job_template`) |
-| `PATCH /v1/cron-jobs/{id}` | Enable/disable |
-| `GET /healthz` | `200 {"status":"ok"}` when Postgres + Redis reachable, else `503` |
-| `GET /metrics` | `jobs_submitted/completed/failed_total`, `queue_depth` |
-
-Error shape: `{"error":{"code":"...","message":"..."}}` with `400` validation,
-`401` auth, `404` unknown id, `409` state/idempotency conflicts, `429` +
-`Retry-After: 60` over quota.
-
-## Concepts
-
-* **Idempotency** — `idempotency_key` is unique per client: same bytes, same
-  job; same key with different content is rejected so retries never fork.
-* **Retries & backoff** — `max_attempts` (1–5 typical) with 1s→2s→4s→… delays;
-  each attempt is a row in `job_executions` with the callback's status code.
-* **Dead letters** — attempts exhausted → `dead` with `last_error`; fix the
-  receiver, then retry explicitly. Nothing retries forever silently.
-* **Rate limits** — 60/min per key across all routes (Redis sliding window).
-* **SSRF guard** — `callback_url` must be public http(s); private/internal
-  targets are rejected at submit time.
-* **Scheduler leadership** — Redis lock elects exactly one scheduler; logs
-  show `acquired scheduler leadership`; failover is automatic.
-* **Cron** — standard 5-field expressions, one instance per minute boundary,
-  disable without deleting.
-
-## Observability
-
-* Health: ALB target checks hit `/healthz`, which itself pings Postgres and
-  Redis — a green target means the app can actually work.
-* Metrics: scrape `/metrics`; alert on `jobs_failed_total` growth and
-  sustained `queue_depth`. Prod adds CloudWatch alarms for failure rate, API
-  5xx, queue backlog, ECS task health, plus a monthly AWS Budgets guardrail —
-  all fanning out to one SNS topic.
-* Logs: JSON with `job_id` on every leg (submit → promote → execute), so
-  `grep job_id` reconstructs a job's whole lifecycle.
-
-## Testing
+**7. Shut down when finished.** Your database content persists in its named
+volume, so restarting later resumes exactly where you left off.
 
 ```bash
-go build ./... && go vet ./...
-go test ./... -p 1 -count=1        # serial: integration tests share one PG+Redis
+docker compose stop     # keep data
+docker compose down     # stop everything
+docker compose down -v  # also discard all data and start fresh
 ```
 
-`cmd/api` holds handler/router/auth tests including idempotency-regression
-cases; `internal/scheduler` covers leader handoff; `internal/worker` covers
-flaky/slow-callback resilience. `docker compose` + the `callback` sink give a
-full local end-to-end (submit → worker POST → sink records → `done`).
+## Configuration in plain language
 
-### Load Test Results (Local, 2026-10-05)
+The platform reads a small set of environment settings. The database
+connection address and the cache address tell each service where its
+dependencies live. The HTTP port sets where the API listens. The log level
+and the per-service database connection limit have sensible defaults and
+only need changing for tuning. The scheduler's tick interval balances
+dispatch speed against polling chatter, defaulting to half a second. One
+development-only switch relaxes delivery-address safety so the in-network
+demo receiver is accepted; production deployments leave it unset, which
+keeps the safety checks strict from submission through delivery. The
+scheduler's identity defaults to a unique value per machine, which leader
+election depends on — never give replicas a shared fixed identity.
 
-Sustained 4-minute soak, 5 API keys (60 req/min/key limit), workers live:
+## Day-to-day use
 
-* **Requests**: 1,200 over 4 minutes, concurrency 10
-* **Success**: 1,185 (98.75%); **rate limited**: 15 (429 + `Retry-After`, by design)
-* **Errors**: 0 — no 5xx, no timeouts, no dropped jobs
-* **Latency**: p50 18 ms, p95 19 ms, p99 22 ms, max 34 ms
-* **Throughput**: 5 req/s (by design — 5 keys × 60 req/min)
-* Queue drained to 0; sampled jobs `done` with sink receipts.
+Submit work through the jobs endpoint with its data, timing, retry budget,
+idempotency key, and delivery address. Read any job back by its identifier,
+browse and filter the job list, or cancel work that has not started yet.
+Exhausted work appears in the dead-letter list and returns to the queue
+through the retry action, available both in the API and as a button on the
+dashboard. Recurring work is managed through the cron endpoints: create a
+schedule from a cron expression plus a job template, and pause or resume it
+without losing history. Quotas are generous per key; when you exceed yours
+the platform tells you exactly how long to wait before retrying.
 
-Mixed-endpoint stress (same day, hardened build): 1,400 ops across 16 endpoint cases
-(submit/get/list/cancel/retry/dead-letters/cron + 400/401/404/409 paths),
-20 workers on distinct client IPs, 7 keys — **0 unexpected responses**
-(p99 36 ms; 1,067 correct 429s: per-key quotas + per-IP throttle shedding
-load as designed). Endpoint E2E: **20/20 pass**.
+## Testing and verification
 
-Run them (provision keys first, see above):
+Correctness is checked at four levels. Unit and integration tests cover
+every package against real PostgreSQL and Redis and run serially because
+they share those services. An endpoint checker exercises every route and
+error path against a live stack. A stress runner hammers all endpoints
+concurrently and fails on any surprising response. A sustained load runner
+measures throughput and latency over several minutes. Recent verified
+results are recorded with the load documentation: twenty out of twenty
+endpoint checks passing, fourteen hundred mixed operations with zero
+surprises, and twelve hundred sustained submissions at ninety-nine percent
+success with no errors and a ninety-ninth percentile latency in the low
+tens of milliseconds.
+
+## Essential commands and files
+
+Everything below assumes the stack is running locally and your shell sits
+at the repository root.
+
+**Build and static checks.**
+
+```bash
+go build ./...
+go vet ./...
+golangci-lint run
+```
+
+**Full test suite.** Tests need the database and cache addresses, so export
+them first (adjust the password to match your local environment file).
+
+```bash
+export JOB_SCHEDULER_DB_DSN="postgres://burhaan:<password>@localhost:5432/job_scheduler?sslmode=disable"
+export REDIS_ADDR="localhost:6379" API_PORT=4000 LOG_LEVEL=info DB_MAX_CONNS=10 SCHEDULER_POLL_INTERVAL=500ms
+go test ./... -p 1 -count=1
+```
+
+**Live verification harnesses.** Each needs provisioned API keys passed
+through the environment, so no secret is ever committed.
 
 ```bash
 E2E_API_KEY=<key> go run ./tools/e2e
@@ -222,99 +229,86 @@ STRESS_API_KEYS=<k1,k2> go run ./tools/stress             # STRESS_OPS=1000 STRE
 LOADTEST_API_KEYS=<5 keys> go run ./tools/loadtest       # LOADTEST_MINUTES=4 LOADTEST_TOTAL=1200
 ```
 
-Full tables: [`docs/load-test-results.md`](docs/load-test-results.md).
-Deep dives: [`docs/project.md`](docs/project.md) (start here),
-[`docs/api.md`](docs/api.md), [`docs/worker.md`](docs/worker.md),
-[`docs/scheduler.md`](docs/scheduler.md), [`docs/queue.md`](docs/queue.md),
-[`docs/security.md`](docs/security.md),
-[`docs/architecture.md`](docs/architecture.md),
-[`docs/comparison.md`](docs/comparison.md).
+**Operating the stack.**
 
-### CI Quality Gates
-
-Every push runs the following automated checks via GitHub Actions:
-
-| Gate | Tool | Threshold |
-|------|------|-----------|
-| Lint | `golangci-lint` (govet, staticcheck, errcheck, unused, misspell, unconvert, bodyclose, noctx, rowserrcheck) | Zero warnings |
-| Race-detected tests | `go test -race` | Zero data races |
-| Coverage | `go tool cover` | ≥ 70% on `internal/` packages |
-| Secret scan | `gitleaks` | Zero secrets in history |
-| Vulnerability scan | `govulncheck` | Zero high-severity CVEs in dependencies |
-| Docker build | `docker compose build` | All images build successfully |
-| Terraform plan | `terraform plan` | `fmt`+`validate` on every PR (lint-level by design); full dev `plan` when OIDC is wired (`AWS_OIDC_PLAN_ENABLED`) |
-
-All gates must pass before merge. The CI workflow is defined in `.github/workflows/ci.yml`.
-
-## Production (AWS)
-
-Region `ap-south-2`. VPC with public subnets (tasks use public IPs via IGW —
-documented cost choice, same security groups) and fully private RDS +
-ElastiCache reachable only from task security groups. RDS Postgres 16
-(`db.t4g.micro`), Redis 7 (`cache.t4g.micro`), 3 ECR repos, Fargate services
-(api 2, scheduler 1, worker 2–6 on CPU autoscaling), internet-facing ALB
-with `/healthz` checks, DB password in Secrets Manager (referenced by ARN),
-and a monthly cost budget ($15 dev / $40 prod) alerting to SNS at 80 %
-actual and 100 % forecasted spend.
-
-Deploys: merge to `main` → GitHub Actions assumes an OIDC-federated IAM role
-(no static keys) → builds/pushes `:sha` images → registers new task-def
-revisions → rolls services → smoke-tests `/healthz` (fails the run otherwise).
-Rollback = `update-service --task-definition <prev-revision>` per service.
-
-## Project layout
-
-```
-cmd/{api,scheduler,worker,apikey,callback}/  service entrypoints
-internal/{api,config,db,executor,health,logger,metrics,ratelimit,
-  redisclient,repository,retry,scheduler,stream,validator,worker}/  libraries
-tools/{e2e,stress,loadtest}/  endpoint checks, mixed-endpoint stress, sustained soak
-migrations/000001..000005  versioned schema (up/down)
-docs/{project,api,worker,scheduler,queue,security,architecture,comparison}.md
-  concept guides + redis-keys.md, load-test-results.md, architecture.mmd
-ecs/  legacy console task defs (Terraform is the source of truth)
-terraform/  AWS stack (networking, RDS, ElastiCache, ECR+IAM, ECS+ALB, OIDC, budgets)
-Dockerfile.*  per-service images    docker-compose.yml  local stack
+```bash
+docker compose logs -f api worker scheduler   # follow service logs
+docker compose up --scale worker=3            # run three workers
+docker compose exec -T postgres psql -U burhaan -d job_scheduler   # database shell
+docker compose exec -T redis redis-cli        # cache shell
 ```
 
-## Design tradeoffs
+**Database migrations.** Schema changes ship as numbered files; the
+migrate service applies them automatically on startup, and these run them
+by hand when needed.
 
-1. **Postgres for truth, Redis for speed.** Jobs live in Postgres (auditable,
-   queryable) while dispatch rides Streams (fast, blocking reads). Two systems
-   to operate, but neither does the other's job well.
-2. **At-least-once delivery + idempotency keys.** The worker may redeliver
-   after a crash; keys make repeats safe instead of pretending failures can't
-   happen.
-3. **Webhooks as the execution model.** A job *is* an HTTP POST to your URL —
-   no worker plugins to deploy. Less flexible than embedded tasks, far easier
-   to integrate and to reason about.
-4. **One leader scheduler, many workers.** Leadership via Redis is simpler and
-   cheaper than consensus, and workers scale horizontally without coordination.
-5. **Cost-shaped topology.** Tasks in public subnets with tight security groups
-   instead of a NAT Gateway (~$32/mo saved); single-AZ-tolerant sizing for a
-   side project. Private subnets + NAT is the documented upgrade when the
-   budget allows.
+```bash
+migrate -path=./migrations -database="$JOB_SCHEDULER_DB_DSN" up
+migrate -path=./migrations -database="$JOB_SCHEDULER_DB_DSN" down 1
+```
 
-## Troubleshooting
+**Infrastructure (checked, never applied from here).**
 
-| Symptom | Likely cause |
-|---|---|
-| `/healthz` 503 | Postgres or Redis unreachable — check DSN/addr, security groups |
-| `401 invalid API key` | Wrong key or SHA-256 mismatch when inserting `hashed_key` |
-| `409 IDEMPOTENCY_KEY_CONFLICT` | Key reused with a different payload — use a fresh key |
-| `429` + `Retry-After` | Over 60/min on that key — back off |
-| Job stuck `pending` | Scheduler not leading / workers at 0 — check service counts and `queue_depth` |
-| Job `dead`, `last_error` timeout | Callback slower than 10s or unreachable from workers |
-| `callback_url` rejected | Private/internal URL — must be a public hostname (SSRF guard) |
+```bash
+terraform -chdir=terraform fmt -check -recursive
+terraform -chdir=terraform init -backend=false
+terraform -chdir=terraform validate
+```
+
+**Files worth knowing by path.**
+
+- `openapi.yaml` — the API contract; served verbatim and rendered at `/docs`.
+- `web/dashboard.html` — the dashboard source; the API embeds a verified copy.
+- `docker-compose.yml` — the full local stack, including the dev-only
+  safety relaxation for the demo receiver.
+- `.env.example` — every setting with an explanation; copy to `.env`.
+- `migrations/` — numbered schema changes, each with an undo step.
+- `cmd/` and `internal/` — service entry points and domain libraries.
+- `tools/e2e`, `tools/stress`, `tools/loadtest` — the verification harnesses.
+- `terraform/` — the whole cloud footprint, with per-environment settings
+  in `dev.tfvars` and `prod.tfvars`.
+- `.github/workflows/` — the pipelines that lint, test, build, and deploy.
+- `docs/` — one guide per concept, starting with `theory-and-systems.md`.
+
+## Deploying to production
+
+Production runs the same container images on managed infrastructure in the
+Mumbai region: a virtual network, managed PostgreSQL and Redis in private
+subnets, container image repositories, serverless container hosting behind
+a load balancer with health-gated targets, secrets held in the managed
+secret store and referenced by name, and alarms for failure rate, endpoint
+errors, queue backlog, task health, and monthly spend — all notifying one
+shared channel. Merging to the main branch builds and ships new image
+revisions automatically through short-lived cloud credentials, verifies the
+live health endpoint before declaring success, and rolls back by redeploying
+the previous revision. Every piece of that infrastructure is declared in the
+infrastructure directory and reviewed like application code, with separate
+lean settings for development and production.
+
+## Documentation map
+
+Start with the theory and systems guide for the complete picture in one
+place, then go deeper per interest: the overall project guide, the API, the
+worker, the scheduler, the queue and retry behavior, security, the system
+architecture, and a comparison with the closest products on the market.
+Operators will also want the live data-structure map and the measured load
+results.
+
+## Quality gates
+
+Every change passes the same bar before it can merge: static analysis with
+zero warnings, the full test suite with the race detector against real
+services, a minimum coverage threshold on the core packages, secret and
+dependency vulnerability scanning, successful builds of all container
+images, and infrastructure formatting and validation.
 
 ## Contributing
 
-Branch from `main`, keep one responsibility per commit (`feat/fix/docs:` style
-with a short body explaining the feature), and make sure `gofmt`,
-`go vet ./...`, and `go test ./... -p 1 -count=1` are green before opening a
-PR. Every push runs CI (lint + race tests + image builds); merges to `main`
-deploy to production automatically, so keep `main` releasable.
+Branch from the main line, keep each change focused with a message that
+explains what and why, and make sure formatting, static analysis, and the
+full test suite are green before proposing a merge. The main line always
+stays releasable, because merging to it ships to production.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Released under the MIT license. See the license file for details.
