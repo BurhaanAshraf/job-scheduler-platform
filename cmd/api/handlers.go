@@ -142,12 +142,12 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 		if enqueueErr != nil {
-			// DB row exists but Redis enqueue failed. We return 500
-			// without ack-style guarantees; a reconciliation job should
-			// re-enqueue pending rows (future outbox). Log for visibility.
+			// DB row exists but Redis enqueue failed. The outbox row
+			// written in the same transaction as the job lets the
+			// scheduler reconciler re-enqueue it; log for visibility.
 			h.logger.ErrorContext(
 				r.Context(),
-				"job created in DB but Redis enqueue failed; needs reconciliation",
+				"job created in DB but Redis enqueue failed; outbox reconciler will retry",
 				"job_id", jobID,
 				"error", enqueueErr,
 			)
@@ -158,6 +158,12 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 				"failed to schedule job",
 			)
 			return
+		}
+
+		// Best-effort: the reconciler reaps leftovers, so a cleanup
+		// failure here is logged, never fatal.
+		if err := h.jobRepo.DeleteOutboxEntries(r.Context(), jobID); err != nil {
+			h.logger.ErrorContext(r.Context(), "delete outbox entry failed", "job_id", jobID, "error", err)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -642,6 +648,14 @@ func (h *Handler) RetryJob(w http.ResponseWriter, r *http.Request) {
 		job.Payload,
 		job.QueueGeneration,
 	); err != nil {
+		// The outbox row written by Retry() lets the reconciler finish
+		// this handoff; report 500 now and log for visibility.
+		h.logger.ErrorContext(
+			r.Context(),
+			"job retried in DB but Redis enqueue failed; outbox reconciler will retry",
+			"job_id", job.ID,
+			"error", err,
+		)
 		api.WriteError(
 			w,
 			http.StatusInternalServerError,
@@ -649,6 +663,10 @@ func (h *Handler) RetryJob(w http.ResponseWriter, r *http.Request) {
 			"failed to enqueue retried job",
 		)
 		return
+	}
+
+	if err := h.jobRepo.DeleteOutboxEntries(r.Context(), job.ID); err != nil {
+		h.logger.ErrorContext(r.Context(), "delete outbox entry failed", "job_id", job.ID, "error", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

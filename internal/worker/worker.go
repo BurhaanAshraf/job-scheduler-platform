@@ -16,13 +16,19 @@ const (
 	reclaimInterval   = 30 * time.Second
 	stalePendingAfter = 60 * time.Second
 	reclaimBatch      = 10
+	// maxPoisonDeliveries bounds redelivery of a message that never
+	// progresses: at this many XREADGROUP/XCLAIM deliveries the message
+	// is quarantined to the DLQ instead of reclaimed again. Must stay
+	// well below any MAXLEN trim horizon so poison never silently drops.
+	maxPoisonDeliveries = 5
 )
 
 type Worker struct {
-	redis     *redis.Client
-	processor *Processor
-	consumer  string
-	logger    *slog.Logger
+	redis      *redis.Client
+	processor  *Processor
+	consumer   string
+	logger     *slog.Logger
+	staleAfter time.Duration
 }
 
 func NewWorker(redisClient *redis.Client, processor *Processor, consumer string, logger *slog.Logger) *Worker {
@@ -30,10 +36,11 @@ func NewWorker(redisClient *redis.Client, processor *Processor, consumer string,
 		consumer = "worker-unknown"
 	}
 	return &Worker{
-		redis:     redisClient,
-		processor: processor,
-		consumer:  consumer,
-		logger:    logger,
+		redis:      redisClient,
+		processor:  processor,
+		consumer:   consumer,
+		logger:     logger,
+		staleAfter: stalePendingAfter,
 	}
 }
 
@@ -109,7 +116,7 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) reclaimStale(ctx context.Context) {
-	pending, err := stream.ListStalePending(ctx, w.redis, stalePendingAfter, reclaimBatch)
+	pending, err := stream.ListStalePending(ctx, w.redis, w.staleAfter, reclaimBatch)
 	if err != nil {
 		w.logger.Error("failed to list stale pending messages", "error", err)
 		return
@@ -118,12 +125,30 @@ func (w *Worker) reclaimStale(ctx context.Context) {
 		return
 	}
 
-	ids := make([]string, 0, len(pending))
+	// Poison partition: messages delivered maxPoisonDeliveries times without
+	// progress are quarantined to the DLQ; the rest are claimed for redrive.
+	// Without this split, one poison pill spins through reclaim forever.
+	var poison, normal []stream.PendingMessage
 	for _, p := range pending {
+		if p.DeliveryCount >= maxPoisonDeliveries {
+			poison = append(poison, p)
+		} else {
+			normal = append(normal, p)
+		}
+	}
+
+	w.quarantinePoison(ctx, poison)
+
+	if len(normal) == 0 {
+		return
+	}
+
+	ids := make([]string, 0, len(normal))
+	for _, p := range normal {
 		ids = append(ids, p.ID)
 	}
 
-	claimed, err := stream.Claim(ctx, w.redis, w.consumer, stalePendingAfter, ids...)
+	claimed, err := stream.Claim(ctx, w.redis, w.consumer, w.staleAfter, ids...)
 	if err != nil {
 		w.logger.Error("failed to claim stale pending messages", "error", err)
 		return
@@ -152,4 +177,66 @@ func (w *Worker) reclaimStale(ctx context.Context) {
 // succeed until the group is recreated.
 func isNoGroupError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "NOGROUP")
+}
+
+// quarantinePoison resolves each over-delivered PEL entry to its stream
+// message and hands it to Processor.Quarantine. Entries whose stream data
+// is gone (trimmed past MAXLEN) are acknowledged to clear the orphaned PEL
+// slot: their payloads are unrecoverable, and holding the slot helps no one.
+func (w *Worker) quarantinePoison(ctx context.Context, poison []stream.PendingMessage) {
+	if len(poison) == 0 {
+		return
+	}
+
+	ids := make([]string, 0, len(poison))
+	for _, p := range poison {
+		ids = append(ids, p.ID)
+	}
+
+	messages, err := stream.ReadMessagesByIDs(ctx, w.redis, ids...)
+	if err != nil {
+		// Resolve individually so one trimmed entry doesn't block the rest.
+		for _, p := range poison {
+			msgs, rerr := stream.ReadMessagesByIDs(ctx, w.redis, p.ID)
+			if rerr != nil {
+				w.logger.Error(
+					"poison message data lost, acknowledging orphaned PEL entry",
+					"message_id", p.ID,
+					"error", rerr,
+				)
+				if _, aerr := stream.Acknowledge(ctx, w.redis, p.ID); aerr != nil {
+					w.logger.Error("acknowledge orphaned PEL entry failed", "message_id", p.ID, "error", aerr)
+				}
+				continue
+			}
+			w.quarantineOne(ctx, msgs[0], p.DeliveryCount)
+		}
+		return
+	}
+
+	counts := make(map[string]int64, len(poison))
+	for _, p := range poison {
+		counts[p.ID] = p.DeliveryCount
+	}
+	for _, m := range messages {
+		w.quarantineOne(ctx, m, counts[m.ID])
+	}
+}
+
+func (w *Worker) quarantineOne(ctx context.Context, m stream.Message, deliveries int64) {
+	if err := w.processor.Quarantine(ctx, m, deliveries); err != nil {
+		w.logger.Error(
+			"quarantine poison message failed, will retry next tick",
+			"message_id", m.ID,
+			"job_id", m.JobID,
+			"error", err,
+		)
+		return
+	}
+	w.logger.Info(
+		"poison message quarantined to dead-letter queue",
+		"message_id", m.ID,
+		"job_id", m.JobID,
+		"deliveries", deliveries,
+	)
 }

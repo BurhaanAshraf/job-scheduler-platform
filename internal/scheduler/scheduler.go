@@ -15,9 +15,11 @@ import (
 type Scheduler struct {
 	redis        *redis.Client
 	cronRepo     *repository.CronJobRepository
+	jobRepo      *repository.JobRepository
 	pollInterval time.Duration
 	leaderLock   *LeaderLock
 	log          *slog.Logger
+	outboxGrace  time.Duration
 }
 
 // A shorter interval reduces dispatch latency but increases Redis polling;
@@ -37,6 +39,7 @@ func New(
 		pollInterval: pollInterval,
 		leaderLock:   leaderLock,
 		log:          log,
+		outboxGrace:  outboxGracePeriod,
 	}
 }
 
@@ -99,6 +102,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	// CloudWatch Logs metric filter can alarm on sustained backlog.
 	// Tick-level logging would drown the log group (500ms polls).
 	var lastDepthLog time.Time
+	var lastReconcile time.Time
 
 	for {
 		select {
@@ -177,6 +181,18 @@ func (s *Scheduler) Run(ctx context.Context) error {
 				continue
 			}
 
+			if time.Since(lastReconcile) >= outboxReconcileInterval {
+				if n, err := s.ReconcileOutbox(ctx); err != nil {
+					if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+						return ctx.Err()
+					}
+					s.log.Error("reconcile outbox failed, retrying next cycle", "error", err)
+				} else if n > 0 {
+					s.log.Info("outbox reconciled", "count", n)
+				}
+				lastReconcile = time.Now().UTC()
+			}
+
 			if time.Since(lastDepthLog) >= time.Minute {
 				if n, err := stream.QueueBacklog(ctx, s.redis); err != nil {
 					s.log.Debug("queue depth read failed", "error", err)
@@ -229,16 +245,24 @@ func (s *Scheduler) TickCronJobs(ctx context.Context, now time.Time,
 			instance.QueueGeneration,
 		)
 		if err != nil {
-			// DB row exists but Redis enqueue failed: log for
-			// reconciliation (future outbox should make this atomic).
-			// Continue ticking other crons instead of crashing.
+			// The outbox row written by CreateDueInstance lets the next
+			// reconcile cycle finish this handoff. Continue ticking other
+			// crons instead of crashing.
 			s.log.Error(
-				"enqueue cron instance failed; DB row exists without Redis entry and needs reconciliation",
+				"enqueue cron instance failed; outbox reconciler will retry",
 				"job_id", instance.ID,
 				"cron_job_id", cronJob.ID,
 				"error", err,
 			)
 			continue
+		}
+
+		// Best-effort: the reconciler reaps leftovers. Guarded for
+		// tests that construct a scheduler without a job repository.
+		if s.jobRepo != nil {
+			if derr := s.jobRepo.DeleteOutboxEntries(ctx, instance.ID); derr != nil {
+				s.log.Error("delete cron outbox entry failed", "job_id", instance.ID, "error", derr)
+			}
 		}
 
 		created++

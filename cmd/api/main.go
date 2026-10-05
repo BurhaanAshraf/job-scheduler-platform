@@ -82,10 +82,11 @@ func run() int {
 	handler := NewHandler(jobRepo, cronRepo, redisClient, log)
 
 	limiter := ratelimit.New(redisClient, 60, time.Minute)
+	ipLimiter := ratelimit.New(redisClient, 300, time.Minute)
 
 	server := &http.Server{
 		Addr:              ":" + cfg.APIPort,
-		Handler:           Server(log, handler, healthHandler, limiter),
+		Handler:           Server(log, handler, healthHandler, limiter, ipLimiter),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,

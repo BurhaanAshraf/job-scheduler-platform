@@ -348,6 +348,13 @@ func (r *CronJobRepository) CreateDueInstance(
 		)
 	}
 
+	// The outbox row joins the tick transaction: a crash after COMMIT but
+	// before the stream enqueue leaves a claimable entry for the reconciler
+	// instead of a row that never dispatches (next_run_at already advanced).
+	if err := insertOutboxTx(ctx, tx, instance.ID, instance.QueueGeneration, occurrence, OutboxImmediate); err != nil {
+		return CronInstance{}, false, err
+	}
+
 	nextRunAt, err := nextRun(
 		cronJob.CronExpression,
 		occurrence,

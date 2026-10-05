@@ -12,7 +12,10 @@ import (
 
 type contextKey string
 
-const clientNameKey contextKey = "client_name"
+const (
+	clientNameKey  contextKey = "client_name"
+	clientKeyIDKey contextKey = "client_key_id"
+)
 
 // APIKeyStore is the subset of repository needed for authentication.
 // Using an interface avoids coupling auth to JobRepository.
@@ -81,6 +84,7 @@ func APIKeyAuth(repo APIKeyStore) func(http.Handler) http.Handler {
 			}
 
 			ctx := context.WithValue(r.Context(), clientNameKey, key.ClientName)
+			ctx = context.WithValue(ctx, clientKeyIDKey, key.ID.String())
 
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
@@ -90,4 +94,12 @@ func APIKeyAuth(repo APIKeyStore) func(http.Handler) http.Handler {
 func ClientNameFromContext(ctx context.Context) (string, bool) {
 	clientName, ok := ctx.Value(clientNameKey).(string)
 	return clientName, ok
+}
+
+// ClientKeyIDFromContext returns the unique API-key row ID. Rate limiting
+// buckets by this (not by client_name, which is not unique): two keys that
+// share a name must not share a quota.
+func ClientKeyIDFromContext(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(clientKeyIDKey).(string)
+	return id, ok
 }

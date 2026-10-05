@@ -82,7 +82,7 @@ func TestOpenAPIContract(t *testing.T) {
 	redisPinger := redisPinger{redisClient}
 	healthChecker := health.NewChecker(dbPinger, redisPinger, 2*time.Second)
 
-	router := Server(log, handler, NewHealthHandler(healthChecker), limiter)
+	router := Server(log, handler, NewHealthHandler(healthChecker), limiter, nil)
 
 	// Test cases for each endpoint
 	testCases := []struct {
@@ -296,7 +296,7 @@ func TestResponseHeaders(t *testing.T) {
 	redisPinger := redisPinger{client: redisClient}
 	healthChecker := health.NewChecker(dbPinger, redisPinger, 2*time.Second)
 
-	router := Server(log, handler, NewHealthHandler(healthChecker), limiter)
+	router := Server(log, handler, NewHealthHandler(healthChecker), limiter, nil)
 
 	// Test 429 includes Retry-After header
 	req := httptest.NewRequest("POST", "/v1/jobs", bytes.NewReader([]byte(`{

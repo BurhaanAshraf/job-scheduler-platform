@@ -20,7 +20,7 @@ var swaggerUIHTML string
 //go:embed dashboard.html
 var dashboardHTML string
 
-func Server(log *slog.Logger, h *Handler, healthHandler *HealthHandler, limiter *ratelimit.Limiter) http.Handler {
+func Server(log *slog.Logger, h *Handler, healthHandler *HealthHandler, limiter *ratelimit.Limiter, ipLimiter *ratelimit.Limiter) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", http.HandlerFunc(healthHandler.Healthz))
 	mux.Handle("GET /metrics", promhttp.Handler())
@@ -64,5 +64,7 @@ func Server(log *slog.Logger, h *Handler, healthHandler *HealthHandler, limiter 
 		w.Write([]byte(dashboardHTML))
 	})
 
-	return api.Recovery(log, api.Logging(log, mux))
+	// IP throttle outside auth: bounds unauthenticated traffic (key
+	// guessing, scrape floods) before it reaches auth/quotas.
+	return api.Recovery(log, api.Logging(log, api.IPRateLimit(ipLimiter)(mux)))
 }

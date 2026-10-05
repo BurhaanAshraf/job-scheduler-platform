@@ -566,7 +566,7 @@ func TestGetJob(t *testing.T) {
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
 
-	router := Server(logger, Handler, nil, limiter)
+	router := Server(logger, Handler, nil, limiter, nil)
 	apiKey := createTestAPIKey(t, pool)
 
 	idempotencyKey := "get-job-" + uuid.NewString()
@@ -669,7 +669,7 @@ func TestGetJob_NotFound(t *testing.T) {
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
 
-	router := Server(logger, handler, nil, limiter)
+	router := Server(logger, handler, nil, limiter, nil)
 	apiKey := createTestAPIKey(t, pool)
 
 	id := uuid.New()
@@ -723,7 +723,7 @@ func TestAPI_ErrorResponseShape(t *testing.T) {
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
 
-	router := Server(logger, handler, nil, limiter)
+	router := Server(logger, handler, nil, limiter, nil)
 	apiKey := createTestAPIKey(t, pool)
 
 	postReq := httptest.NewRequestWithContext(context.Background(),
@@ -857,7 +857,7 @@ func TestListJobs_OversizedLimit(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
-	router := Server(logger, handler, nil, limiter)
+	router := Server(logger, handler, nil, limiter, nil)
 
 	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet,
@@ -965,7 +965,7 @@ func TestListJobs_StatusFilter(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
-	router := Server(logger, handler, nil, limiter)
+	router := Server(logger, handler, nil, limiter, nil)
 
 	req := httptest.NewRequestWithContext(context.Background(),
 		http.MethodGet,
@@ -1075,7 +1075,7 @@ func TestListJobs_Pagination(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
-	router := Server(logger, handler, nil, limiter)
+	router := Server(logger, handler, nil, limiter, nil)
 
 	// Fetch the ordered result set.
 	req := httptest.NewRequestWithContext(context.Background(),
@@ -1172,7 +1172,7 @@ func TestDeleteJob(t *testing.T) {
 	handler := NewHandler(jobRepo, nil, nil, slog.Default())
 	redisClient := testRateLimitRedis(t)
 	limiter := ratelimit.New(redisClient, 1000, time.Minute)
-	router := Server(slog.Default(), handler, nil, limiter)
+	router := Server(slog.Default(), handler, nil, limiter, nil)
 	apiKey := createTestAPIKey(t, pool)
 
 	var pendingJobID uuid.UUID

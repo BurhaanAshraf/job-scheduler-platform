@@ -10,7 +10,9 @@ import (
 func RateLimit(limiter *ratelimit.Limiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			clientName, ok := ClientNameFromContext(r.Context())
+			// Bucket by key ID, not client name: names are not unique, so
+			// name-bucketing lets one key eat another key's quota.
+			keyID, ok := ClientKeyIDFromContext(r.Context())
 			if !ok {
 				WriteError(
 					w,
@@ -21,7 +23,7 @@ func RateLimit(limiter *ratelimit.Limiter) func(http.Handler) http.Handler {
 				return
 			}
 
-			allowed, ttl, err := limiter.Allow(r.Context(), clientName)
+			allowed, ttl, err := limiter.Allow(r.Context(), "key:"+keyID)
 			if err != nil {
 				WriteError(
 					w,

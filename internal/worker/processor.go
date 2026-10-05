@@ -331,3 +331,57 @@ func acknowledgeOnce(ctx context.Context, client *redis.Client, messageID string
 	}
 	return nil
 }
+
+// Quarantine dead-letters a stream message that has been delivered
+// (XREADGROUP/XCLAIM) at least maxPoisonDeliveries times without ever
+// reaching a terminal state. Such messages are poison: unparseable IDs,
+// deleted jobs, or rows that fail every guard in Process. Without this,
+// the reclaim loop redrives them forever (one XCLAIM per tick, never
+// progressing, never alerting). Terminal or missing jobs are simply
+// acknowledged; anything else goes to the DLQ with an explanatory
+// last_error so the dead-letters view shows why.
+func (p *Processor) Quarantine(ctx context.Context, message stream.Message, deliveries int64) error {
+	jobID, err := uuid.Parse(message.JobID)
+	if err != nil {
+		// Not even a job reference: nothing to dead-letter, just drop it.
+		if ackErr := acknowledgeOnce(ctx, p.redis, message.ID); ackErr != nil {
+			return fmt.Errorf("acknowledge unparseable message %q: %w", message.ID, ackErr)
+		}
+		return nil
+	}
+
+	job, err := p.jobRepo.GetByID(ctx, jobID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			if ackErr := acknowledgeOnce(ctx, p.redis, message.ID); ackErr != nil {
+				return fmt.Errorf("acknowledge message for missing job %q: %w", message.JobID, ackErr)
+			}
+			return nil
+		}
+		return fmt.Errorf("get job %q for quarantine: %w", message.JobID, err)
+	}
+
+	switch job.Status {
+	case repository.StatusDone, repository.StatusCancelled, repository.StatusDead:
+		if err := acknowledgeOnce(ctx, p.redis, message.ID); err != nil {
+			return fmt.Errorf("acknowledge terminal job %q: %w", message.JobID, err)
+		}
+		return nil
+	}
+
+	reason := fmt.Sprintf(
+		"poison message: %d deliveries without progress; quarantined to dead-letter queue",
+		deliveries,
+	)
+	if _, err := stream.DeadLetter(ctx, p.redis, job.ID.String(), []byte(message.Payload)); err != nil {
+		return fmt.Errorf("dead-letter poison job %q: %w", message.JobID, err)
+	}
+	if err := p.jobRepo.UpdateStatus(ctx, job.ID, repository.StatusDead, &reason); err != nil {
+		return fmt.Errorf("mark poison job %q as dead: %w", message.JobID, err)
+	}
+	_ = metrics.Increment(ctx, p.redis, metrics.JobsFailedKey)
+	if err := acknowledgeOnce(ctx, p.redis, message.ID); err != nil {
+		return fmt.Errorf("acknowledge quarantined job %q: %w", message.JobID, err)
+	}
+	return nil
+}

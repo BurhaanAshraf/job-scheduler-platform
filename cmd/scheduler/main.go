@@ -63,6 +63,7 @@ func run() int {
 	defer pool.Close()
 
 	cronRepo := repository.NewCronJobRepository(pool)
+	jobRepo := repository.NewJobRepository(pool)
 
 	instanceID := os.Getenv("SCHEDULER_INSTANCE_ID")
 
@@ -88,6 +89,7 @@ func run() int {
 		leaderLock,
 		log,
 	)
+	s.SetJobRepository(jobRepo)
 
 	log.Info("scheduler started", "instance_id", instanceID)
 

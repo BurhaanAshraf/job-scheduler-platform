@@ -163,34 +163,71 @@ func ReadNext(ctx context.Context, client *redis.Client, consumerName string) ([
 	return ReadNextWithTimeout(ctx, client, consumerName, 2*time.Second)
 }
 
+func toMessage(id string, values map[string]any) (Message, error) {
+	jobID, ok := values["job_id"].(string)
+	if !ok {
+		return Message{}, fmt.Errorf(
+			"stream message %q missing job_id",
+			id,
+		)
+	}
+
+	payload, ok := values["payload"].(string)
+	if !ok {
+		return Message{}, fmt.Errorf(
+			"stream message %q missing payload",
+			id,
+		)
+	}
+
+	return Message{
+		ID:              id,
+		JobID:           jobID,
+		Payload:         payload,
+		QueueGeneration: parseQueueGeneration(values["queue_generation"]),
+	}, nil
+}
+
 func toMessages(result []redis.XStream) ([]Message, error) {
 	messages := make([]Message, 0)
 
 	for _, stream := range result {
 		for _, message := range stream.Messages {
-			jobID, ok := message.Values["job_id"].(string)
-			if !ok {
-				return nil, fmt.Errorf(
-					"stream message %q missing job_id",
-					message.ID,
-				)
+			m, err := toMessage(message.ID, message.Values)
+			if err != nil {
+				return nil, err
 			}
-
-			payload, ok := message.Values["payload"].(string)
-			if !ok {
-				return nil, fmt.Errorf(
-					"stream message %q missing payload",
-					message.ID,
-				)
-			}
-
-			messages = append(messages, Message{
-				ID:              message.ID,
-				JobID:           jobID,
-				Payload:         payload,
-				QueueGeneration: parseQueueGeneration(message.Values["queue_generation"]),
-			})
+			messages = append(messages, m)
 		}
+	}
+
+	return messages, nil
+}
+
+// ReadMessagesByIDs fetches stream entries by ID (used to resolve PEL
+// entries to job data during poison quarantine). A missing entry means the
+// entry was trimmed after MAXLEN: the caller should XACK the orphaned PEL
+// entry, since its data is unrecoverable.
+func ReadMessagesByIDs(
+	ctx context.Context,
+	client *redis.Client,
+	ids ...string,
+) ([]Message, error) {
+	messages := make([]Message, 0, len(ids))
+
+	for _, id := range ids {
+		entries, err := client.XRange(ctx, ReadyStream, id, id).Result()
+		if err != nil {
+			return nil, fmt.Errorf("read stream message %q: %w", id, err)
+		}
+		if len(entries) == 0 {
+			return nil, fmt.Errorf("stream message %q not found (trimmed)", id)
+		}
+		m, err := toMessage(entries[0].ID, entries[0].Values)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, m)
 	}
 
 	return messages, nil
@@ -260,28 +297,11 @@ func Claim(
 	messages := make([]Message, 0, len(claimed))
 
 	for _, message := range claimed {
-		jobID, ok := message.Values["job_id"].(string)
-		if !ok {
-			return nil, fmt.Errorf(
-				"claimed message %q missing job_id",
-				message.ID,
-			)
+		m, err := toMessage(message.ID, message.Values)
+		if err != nil {
+			return nil, err
 		}
-
-		payload, ok := message.Values["payload"].(string)
-		if !ok {
-			return nil, fmt.Errorf(
-				"claimed message %q missing payload",
-				message.ID,
-			)
-		}
-
-		messages = append(messages, Message{
-			ID:              message.ID,
-			JobID:           jobID,
-			Payload:         payload,
-			QueueGeneration: parseQueueGeneration(message.Values["queue_generation"]),
-		})
+		messages = append(messages, m)
 	}
 
 	return messages, nil

@@ -103,8 +103,18 @@ func (r *JobRepository) Create(ctx context.Context, input CreateJobInput) (uuid.
 	// scan returned columns
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+
+	// The outbox row joins the same transaction as the job row: a crash
+	// after COMMIT but before the Redis enqueue leaves a claimable entry
+	// for the reconciler instead of a silently lost job.
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("begin create job transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	// attempts is not an INSERT argument because PostgreSQL supplies its DEFAULT 0.
-	err := r.pool.QueryRow(ctx, query, id, input.Type, input.Payload, status, input.RunAt, input.MaxAttempts, input.IdempotencyKey, input.CallbackURL, createdAt, updatedAt).Scan(&jobID)
+	err = tx.QueryRow(ctx, query, id, input.Type, input.Payload, status, input.RunAt, input.MaxAttempts, input.IdempotencyKey, input.CallbackURL, createdAt, updatedAt).Scan(&jobID)
 
 	// translate duplicate idempotency key
 	if err != nil {
@@ -115,6 +125,17 @@ func (r *JobRepository) Create(ctx context.Context, input CreateJobInput) (uuid.
 			return uuid.Nil, ErrConflict
 		}
 		return uuid.Nil, fmt.Errorf("failed to create job: %w", err)
+	}
+
+	kind := OutboxImmediate
+	if input.RunAt.After(now) {
+		kind = OutboxScheduled
+	}
+	if err := insertOutboxTx(ctx, tx, jobID, 1, input.RunAt, kind); err != nil {
+		return uuid.Nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, fmt.Errorf("commit create job transaction: %w", err)
 	}
 	return jobID, nil
 
@@ -434,7 +455,19 @@ func (r *JobRepository) Retry(ctx context.Context, id uuid.UUID) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	result, err := r.pool.Exec(
+	// The outbox row joins the same transaction as the status flip: a crash
+	// after COMMIT but before the Redis re-enqueue leaves a claimable entry
+	// for the reconciler instead of a job stuck in scheduled-without-stream.
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin retry transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	now := time.Now().UTC()
+	var generation int64
+
+	err = tx.QueryRow(
 		ctx,
 		`UPDATE jobs
 		 SET attempts = 0,
@@ -444,37 +477,37 @@ func (r *JobRepository) Retry(ctx context.Context, id uuid.UUID) error {
 		     queue_generation = queue_generation + 1,
 		     updated_at = $3
 		 WHERE id = $1
-		   AND status = $4`,
+		   AND status = $4
+		 RETURNING queue_generation`,
 		id,
 		StatusScheduled,
-		time.Now().UTC(),
+		now,
 		StatusDead,
-	)
+	).Scan(&generation)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			var status string
+			serr := tx.QueryRow(
+				ctx,
+				`SELECT status FROM jobs WHERE id = $1`,
+				id,
+			).Scan(&status)
+			if errors.Is(serr, pgx.ErrNoRows) {
+				return ErrNotFound
+			}
+			if serr != nil {
+				return fmt.Errorf("failed to check job status: %w", serr)
+			}
+			return fmt.Errorf("%w: job status is %q, only dead jobs can be retried", ErrNotCancellable, status)
+		}
 		return fmt.Errorf("failed to retry job: %w", err)
 	}
 
-	if result.RowsAffected() == 0 {
-		checkCtx, checkCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer checkCancel()
-
-		var status string
-
-		err := r.pool.QueryRow(
-			checkCtx,
-			`SELECT status FROM jobs WHERE id = $1`,
-			id,
-		).Scan(&status)
-
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrNotFound
-		}
-
-		if err != nil {
-			return fmt.Errorf("failed to check job status: %w", err)
-		}
-
-		return fmt.Errorf("%w: job status is %q, only dead jobs can be retried", ErrNotCancellable, status)
+	if err := insertOutboxTx(ctx, tx, id, generation, now, OutboxImmediate); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit retry transaction: %w", err)
 	}
 
 	return nil

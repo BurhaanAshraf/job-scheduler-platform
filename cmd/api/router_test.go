@@ -13,7 +13,7 @@ func TestServer_UnknownRouteReturns404(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	handler := NewHandler(nil, nil, nil, slog.Default())
-	router := Server(logger, handler, nil, nil)
+	router := Server(logger, handler, nil, nil, nil)
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/testHttp404", nil)
 	if err != nil {
