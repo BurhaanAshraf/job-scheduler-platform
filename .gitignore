@@ -33,3 +33,6 @@ coverage.out
 # Local overrides
 *.local
 *.override
+
+# Private interview prep bible: local only, never pushed.
+/docs/theory-and-systems.md

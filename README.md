@@ -75,8 +75,8 @@ knowledge has exactly one home.
   development and production environments.
 - Documentation with one guide per concept: the overall project, the API,
   the worker, the scheduler, the queue and retry behavior, security, the
-  architecture, a market comparison, the theory behind the design, measured
-  load results, and a map of the live data structures.
+  architecture, a market comparison, measured load results, and a map of the
+  live data structures.
 
 ## Prerequisites
 
@@ -268,7 +268,7 @@ terraform -chdir=terraform validate
 - `terraform/` — the whole cloud footprint, with per-environment settings
   in `dev.tfvars` and `prod.tfvars`.
 - `.github/workflows/` — the pipelines that lint, test, build, and deploy.
-- `docs/` — one guide per concept, starting with `theory-and-systems.md`.
+- `docs/` — one guide per concept, starting with `docs/project.md`.
 
 ## Deploying to production
 
@@ -287,10 +287,10 @@ lean settings for development and production.
 
 ## Documentation map
 
-Start with the theory and systems guide for the complete picture in one
-place, then go deeper per interest: the overall project guide, the API, the
-worker, the scheduler, the queue and retry behavior, security, the system
-architecture, and a comparison with the closest products on the market.
+Start with the project guide for the complete picture in one place, then
+go deeper per interest: the API, the worker, the scheduler, the queue and
+retry behavior, security, the system architecture, and a comparison with the
+closest products on the market.
 Operators will also want the live data-structure map and the measured load
 results.
 

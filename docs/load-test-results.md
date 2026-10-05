@@ -53,7 +53,7 @@ auth 401s, bad id 400, max_attempts 400s.
 
 ## Live AWS (dev) — 2026-10-04 (prior run, kept for reference)
 
-Target: ALB `dev-job-scheduler-alb-146113635.ap-south-2.elb.amazonaws.com`
+Target: the dev ALB public DNS name (redacted; region ap-south-2)
 (ECS Fargate: 1× api, 1× scheduler, 1× worker — all `256 CPU / 512 MiB`).
 Tool: `tools/loadtest` variant pointed at the live ALB (5 min, 1 API key,
 callback `https://httpbin.org/post`, pacing 1 req/s ≈ the 60 req/min/key limit).
