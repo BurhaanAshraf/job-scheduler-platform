@@ -22,7 +22,10 @@ Every `SCHEDULER_POLL_INTERVAL` (default 500 ms), **if leader**:
    nextRun(occurrence)` (fast-forwards past `now` after downtime) → `COMMIT`.
    Duplicate key (`23505`) means another scheduler already spawned this tick
    → skip. Then `EnqueueDue` the instance to the stream.
-3. `QueueBacklog` → `queue depth` log line (consumer-group lag + pending;
+3. `ReconcileOutbox` (every 30 s) — claims `job_outbox` rows past the
+   grace period and finishes interrupted DB→Redis handoffs (stale rows for
+   gone/terminal/superseded jobs are deleted, not dispatched).
+4. `QueueBacklog` → `queue depth` log line (consumer-group lag + pending;
    `XLEN` fallback before the group exists).
 
 Standbys do nothing but attempt lock acquisition — no error spam, no dispatch.
@@ -70,9 +73,10 @@ covers the race.
 
 ## Known limitations
 
-- Crash between cron `COMMIT` and stream `EnqueueDue` leaves a DB row with no
-  stream entry and no reconciler yet (logged explicitly; the planned outbox
-  would close it — same gap as the API submit path).
+- Crash between cron `COMMIT` and stream `EnqueueDue` (or API submit/retry
+  equivalents) leaves an outbox row that the reconciler re-enqueues within
+  ~30 s — closed, not just logged. The remaining micro-window is a lost race
+  producing a safe duplicate delivery, never a loss.
 - No fencing token: correctness during overlap rests on Lua atomicity + DB
   uniqueness, not on the lock itself. Sufficient at this scale, documented
   rather than hidden.

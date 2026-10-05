@@ -21,6 +21,13 @@ Stream entries carry `job_id`, `payload`, `queue_generation`. `MAXLEN ~
 the oldest *unacked* entries trim. Operate workers before load, and alert on
 `queue_depth`.
 
+Every DB→Redis handoff (submit, cron spawn, dead-job retry) is covered by a
+transactional outbox (`job_outbox`, written in the same transaction as the
+job row). The normal path deletes its row right after enqueueing; the
+leader scheduler's reconciler re-enqueues leftovers past a 30 s grace period
+(duplicate delivery is safe via the worker generation guard). Steady state
+is an empty table — alert on growth, not just `queue_depth`.
+
 ## Consumer groups, the right way
 
 - Group `workers` is created with ID **`0`**, not `$`: after group loss (key
@@ -74,5 +81,7 @@ once workers start.
 | Scheduler crash | standby takes over within ~TTL; due jobs promote late, never twice |
 | Poison payload in ZSET | quarantined by Lua; tick continues |
 | Callback 500/timeout | backoff retry → DLQ after `max_attempts` |
+| Crash between DB commit and Redis enqueue | outbox row reconciled within ~30 s, redelivered safely |
+| Poison message (5+ deliveries, no progress) | quarantined to DLQ with explanatory `last_error`, PEL slot cleared |
 | Callback > 1 MiB body | treated as failure (retried), never a false `done` |
 | 301/302/303 redirect | refused (would drop payload); 307/308 same-host followed |

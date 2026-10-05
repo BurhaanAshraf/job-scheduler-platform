@@ -31,11 +31,17 @@ Tool: `STRESS_API_KEYS=<7 keys> STRESS_OPS=1400 STRESS_WORKERS=20 go run
 
 | Metric | Value |
 |---|---|
-| Operations | 1400 across 16 endpoint cases |
-| Behaved exactly as specified | 620 |
-| Correctly rate-limited (429) | 1003 (quota working under hammering) |
+| Operations | 1400 across 16 endpoint cases, 20 workers on distinct client IPs, 7 keys (hardened build) |
+| Behaved exactly as specified | 540 |
+| Correctly rate-limited (429) | 1067 (per-key quotas + per-IP throttle shedding load as designed) |
 | Unexpected status / error | **0** |
-| Latency p50 / p95 / p99 / max | 3.6ms / 16ms / 21ms / 27ms |
+| Latency p50 / p95 / p99 / max | 4.2ms / 27ms / 36ms / 75ms |
+
+Also verified live against the hardened build: two keys sharing one
+`client_name` hold independent quotas (key A: 60×201 then 429; key B still
+201), and 310 unauthenticated requests from one IP yield 300×401 then
+10×429 at the IP throttle. `job_outbox` steady-state row count after
+1,700+ jobs: **0**.
 
 ## Endpoint E2E (2026-10-05, current code)
 

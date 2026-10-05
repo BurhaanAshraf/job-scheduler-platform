@@ -76,9 +76,12 @@ at most 3 times and produces exactly 3 `job_executions` rows before going
   for reclaim; combined with idempotency keys, redelivery is safe.
 - **Exactly-once effects** are the *tenant's* job (keyed by the
   `Idempotency-Key` header), not the platform's claim.
-- **Poison messages** (bad stream fields, deleted job rows) are reclaimed
-  forever without DLQ — the one known gap; delivery-count-based quarantine
-  is the documented next step.
+- **Poison messages** (bad stream fields, deleted job rows, rows that fail
+  every guard) are quarantined after 5 deliveries without progress:
+  `Processor.Quarantine` dead-letters live jobs with an explanatory error and
+  ACKs terminal/missing ones, so the reclaim loop can neither spin forever
+  nor silently drop data. Trimmed entries (data gone past `MAXLEN`) get
+  their orphaned PEL slots acknowledged with a loud log.
 - ** DLQ is explicit**: nothing retries forever; a human (or automation)
   calls `POST /v1/jobs/{id}/retry`, which resets attempts to 0 and bumps the
   generation so in-flight redeliveries of the old generation go stale.

@@ -76,7 +76,8 @@ Plus `callback` (demo sink), `apikey` (key provisioning CLI), `migrate`
    (honest about crashes); webhooks over embedded tasks (integration ease vs
    flexibility); one Redis leader over consensus (simplicity vs fencing —
    uniqueness keys cover the gap); public-subnet tasks over NAT (cost vs
-   textbook topology); no outbox yet (named gap with logs marking each site).
+   textbook topology); transactional outbox + reconciler closing the DB→Redis
+   handoff (duplicates safe via the worker generation guard).
 
 ## Verify it yourself
 

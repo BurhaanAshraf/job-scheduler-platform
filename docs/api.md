@@ -21,10 +21,13 @@ jobs itself.
 2. **Auth** (`internal/api/auth.go`): `Authorization: Bearer <raw-key>` is
    SHA-256 hashed and looked up in `api_keys`; missing/unknown/revoked →
    `401`. The client name is attached to the request context.
+0. **IP throttle** (`internal/api/iplimit.go`, outside auth): 300
+   req/min per client IP before anything else runs, so unauthenticated floods
+   cost `429`s instead of free database lookups.
 3. **Rate limit** (`internal/api/ratelimit.go` +
    `internal/ratelimit/limiter.go`): sliding-window `ZADD`/`ZREMRANGEBYSCORE`/
-   `ZCARD` in Redis, 60 req/min per client name; over quota → `429` with
-   `Retry-After`.
+   `ZCARD` in Redis, 60 req/min per API-key ID (unique per key, never the
+   non-unique client name); over quota → `429` with `Retry-After`.
 4. **Decode** (`decodeJSONBody`): `MaxBytesReader` 1 MiB → oversized is `413`
    (`REQUEST_TOO_LARGE`), unknown fields and trailing garbage are `400`.
 5. **Validate** (`validateCreateJobRequest`): type ≤128 chars, payload valid

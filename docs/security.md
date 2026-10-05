@@ -18,15 +18,19 @@ delivery. Secrets never touch git, images, or task definitions in plaintext.
 
 ## Rate limiting (`internal/ratelimit/limiter.go`)
 
-- Sliding window in Redis per `rate_limit:<client_name>`: `ZADD now member →
+- Sliding window in Redis per `rate_limit:key:<key-ID>`: `ZADD now member →
   ZREMRANGEBYSCORE older-than-window → ZCARD ≤ 60/min`, else `429` with
   `Retry-After: 60`. One atomic Lua script per request; no local state, so
-  all API replicas enforce one shared quota.
-- Limits apply to **authenticated** requests (the middleware order is
-  `auth(rateLimit(...))`), which means unauthenticated key-guessing is *not*
-  throttled by this limiter — brute force is mitigated by 256-bit key entropy
-  instead. Public scrape endpoints are unthrottled; put the stack behind a
-  WAF/CDN if you expose it to hostile traffic.
+  all API replicas enforce one shared quota. Buckets are keyed by the unique
+  API-key row ID — `client_name` is not unique, so name-bucketing let one key
+  eat another key's quota (fixed; regression-tested with colliding names).
+- An outer IP throttle (`internal/api/iplimit.go`, 300 req/min per client IP
+  from `X-Forwarded-For` or the connection address) bounds unauthenticated
+  traffic before auth: key-guessing and scrape floods get `429`s instead of
+  free rein. The budget is generous on purpose — per-key quotas still enforce
+  fairness after auth. Behind an ALB, `X-Forwarded-For` carries the client IP;
+  its leftmost entry is client-controlled, so this layer is a throttle, not
+  an identity, and never gates authentication.
 - Member uniqueness uses `math/rand` + millisecond timestamps — a same-ms
   collision would undercount by one entry (fail-open by a single request).
   Acceptable at 60/min granularity; `crypto/rand` is the drop-in hardening.

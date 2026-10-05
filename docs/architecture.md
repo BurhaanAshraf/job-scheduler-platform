@@ -34,12 +34,12 @@ failure modes cleanly:
 - Postgres slow → dispatch stalls visibly (`/healthz` 503, `queue_depth`
   alarm) instead of losing jobs silently.
 
-The price is two systems to operate and one documented gap: the DB→Redis
-handoff (API submit, cron spawn) has no transactional outbox yet — a crash in
-that millisecond window leaves a row with no stream entry, logged loudly
-(`needs reconciliation`) but requiring manual re-enqueue. The code comments
-mark every such site; closing it with an outbox table + reconciler is the
-single biggest durability upgrade available.
+The price is two systems to operate. The DB→Redis handoff risk (a crash
+between commit and enqueue on submit, cron spawn, or retry) is closed with a
+transactional outbox: `job_outbox` rows join the job transaction, the normal
+path deletes them on success, and the leader scheduler reconciles leftovers
+within ~30 s. A lost race only ever produces a safe duplicate delivery —
+the worker's generation guard absorbs it — never a loss.
 
 ## Data flow, end to end
 

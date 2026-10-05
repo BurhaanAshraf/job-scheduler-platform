@@ -69,6 +69,14 @@ type outcome struct {
 }
 
 func call(ctx context.Context, method, path, key string, body any) (int, []byte, time.Duration) {
+	return callFrom(ctx, method, path, key, "", body)
+}
+
+// callFrom adds an X-Forwarded-For source IP. Each stress worker uses a
+// distinct simulated client IP so the per-IP throttle (300/min) does not
+// collapse all workers into one bucket: the run exercises endpoint logic
+// across many throttles instead of one.
+func callFrom(ctx context.Context, method, path, key, srcIP string, body any) (int, []byte, time.Duration) {
 	var r io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -77,6 +85,9 @@ func call(ctx context.Context, method, path, key string, body any) (int, []byte,
 	req, _ := http.NewRequestWithContext(ctx, method, baseURL+path, r)
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	if srcIP != "" {
+		req.Header.Set("X-Forwarded-For", srcIP)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	start := time.Now()
@@ -142,63 +153,64 @@ func main() {
 		go func(w int) {
 			defer wg.Done()
 			key := apiKeys[w%len(apiKeys)]
+			srcIP := fmt.Sprintf("203.0.113.%d", (w%250)+1)
 			for seq := range jobs {
 				kind := seq % 14
 				switch kind {
 				case 0, 1, 2: // submit immediate -> 201
-					st, body, lat := call(ctx, "POST", "/v1/jobs", key, jobBody(seq*100+w))
+					st, body, lat := callFrom(ctx, "POST", "/v1/jobs", key, srcIP, jobBody(seq*100+w))
 					record("POST /v1/jobs", 201, st, lat)
 					if st == 201 {
 						var d map[string]string
 						_ = json.Unmarshal(body, &d)
 						id := d["id"]
 						// get it -> 200
-						st2, _, lat2 := call(ctx, "GET", "/v1/jobs/"+id, key, nil)
+						st2, _, lat2 := callFrom(ctx, "GET", "/v1/jobs/"+id, key, srcIP, nil)
 						record("GET /v1/jobs/{id}", 200, st2, lat2)
 					}
 				case 3: // submit future then cancel -> 201, 204
 					b := jobBody(seq*100 + w)
 					b["run_at"] = time.Now().Add(24 * time.Hour).Format(time.RFC3339)
 					b["idempotency_key"] = fmt.Sprintf("%s-stress-cancel-%d-%d", runID, seq, w)
-					st, body, lat := call(ctx, "POST", "/v1/jobs", key, b)
+					st, body, lat := callFrom(ctx, "POST", "/v1/jobs", key, srcIP, b)
 					record("POST /v1/jobs future", 201, st, lat)
 					if st == 201 {
 						var d map[string]string
 						_ = json.Unmarshal(body, &d)
-						st2, _, lat2 := call(ctx, "DELETE", "/v1/jobs/"+d["id"], key, nil)
+						st2, _, lat2 := callFrom(ctx, "DELETE", "/v1/jobs/"+d["id"], key, srcIP, nil)
 						record("DELETE /v1/jobs/{id}", 204, st2, lat2)
 					}
 				case 4: // list -> 200
-					st, _, lat := call(ctx, "GET", "/v1/jobs?limit=20", key, nil)
+					st, _, lat := callFrom(ctx, "GET", "/v1/jobs?limit=20", key, srcIP, nil)
 					record("GET /v1/jobs", 200, st, lat)
 				case 5: // list filtered + capped -> 200
-					st, _, lat := call(ctx, "GET", "/v1/jobs?status=done&limit=500", key, nil)
+					st, _, lat := callFrom(ctx, "GET", "/v1/jobs?status=done&limit=500", key, srcIP, nil)
 					record("GET /v1/jobs filtered+capped", 200, st, lat)
 				case 6: // bad body -> 400
-					st, _, lat := call(ctx, "POST", "/v1/jobs", key, map[string]any{"type": ""})
+					st, _, lat := callFrom(ctx, "POST", "/v1/jobs", key, srcIP, map[string]any{"type": ""})
 					record("POST /v1/jobs invalid", 400, st, lat)
 				case 7: // SSRF -> 400
 					b := jobBody(seq*100 + w)
 					b["idempotency_key"] = fmt.Sprintf("%s-stress-ssrf-%d-%d", runID, seq, w)
 					b["callback_url"] = "http://169.254.169.254/hook"
-					st, _, lat := call(ctx, "POST", "/v1/jobs", key, b)
+					st, _, lat := callFrom(ctx, "POST", "/v1/jobs", key, srcIP, b)
 					record("POST /v1/jobs ssrf", 400, st, lat)
 				case 8: // missing auth -> 401
-					st, _, lat := call(ctx, "GET", "/v1/jobs", "", nil)
+					st, _, lat := callFrom(ctx, "GET", "/v1/jobs", "", srcIP, nil)
 					record("GET /v1/jobs no-auth", 401, st, lat)
 				case 9: // bad key -> 401
-					st, _, lat := call(ctx, "GET", "/v1/jobs", "bad-key", nil)
+					st, _, lat := callFrom(ctx, "GET", "/v1/jobs", "bad-key", srcIP, nil)
 					record("GET /v1/jobs bad-key", 401, st, lat)
 				case 10: // malformed id -> 400
-					st, _, lat := call(ctx, "GET", "/v1/jobs/not-a-uuid", key, nil)
+					st, _, lat := callFrom(ctx, "GET", "/v1/jobs/not-a-uuid", key, srcIP, nil)
 					record("GET /v1/jobs bad-id", 400, st, lat)
 				case 11: // unknown id -> 404
-					st, _, lat := call(ctx, "GET", "/v1/jobs/00000000-0000-0000-0000-000000000000", key, nil)
+					st, _, lat := callFrom(ctx, "GET", "/v1/jobs/00000000-0000-0000-0000-000000000000", key, srcIP, nil)
 					record("GET /v1/jobs missing", 404, st, lat)
 				case 12: // dead-letters -> 200, retry missing -> 404
-					st, _, lat := call(ctx, "GET", "/v1/dead-letters?limit=10", key, nil)
+					st, _, lat := callFrom(ctx, "GET", "/v1/dead-letters?limit=10", key, srcIP, nil)
 					record("GET /v1/dead-letters", 200, st, lat)
-					st2, _, lat2 := call(ctx, "POST", "/v1/jobs/00000000-0000-0000-0000-000000000000/retry", key, nil)
+					st2, _, lat2 := callFrom(ctx, "POST", "/v1/jobs/00000000-0000-0000-0000-000000000000/retry", key, srcIP, nil)
 					record("POST retry missing", 404, st2, lat2)
 				case 13: // cron create + disable -> 201, 204
 					cb := map[string]any{
@@ -208,13 +220,13 @@ func main() {
 							"max_attempts": 1, "callback_url": "http://callback:8080/hook",
 						},
 					}
-					st, body, lat := call(ctx, "POST", "/v1/cron-jobs", key, cb)
+					st, body, lat := callFrom(ctx, "POST", "/v1/cron-jobs", key, srcIP, cb)
 					record("POST /v1/cron-jobs", 201, st, lat)
 					if st == 201 {
 						var d map[string]float64
 						_ = json.Unmarshal(body, &d)
 						id := fmt.Sprintf("%.0f", d["id"])
-						st2, _, lat2 := call(ctx, "PATCH", "/v1/cron-jobs/"+id, key, map[string]bool{"enabled": false})
+						st2, _, lat2 := callFrom(ctx, "PATCH", "/v1/cron-jobs/"+id, key, srcIP, map[string]bool{"enabled": false})
 						record("PATCH /v1/cron-jobs", 204, st2, lat2)
 					}
 				}

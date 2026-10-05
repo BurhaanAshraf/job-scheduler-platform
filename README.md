@@ -208,10 +208,11 @@ Sustained 4-minute soak, 5 API keys (60 req/min/key limit), workers live:
 * **Throughput**: 5 req/s (by design — 5 keys × 60 req/min)
 * Queue drained to 0; sampled jobs `done` with sink receipts.
 
-Mixed-endpoint stress (same day): 1,400 ops across 16 endpoint cases
+Mixed-endpoint stress (same day, hardened build): 1,400 ops across 16 endpoint cases
 (submit/get/list/cancel/retry/dead-letters/cron + 400/401/404/409 paths),
-20 workers, 7 keys — **0 unexpected responses** (p99 21 ms; 1,003 correct
-429s under hammering). Endpoint E2E: **20/20 pass**.
+20 workers on distinct client IPs, 7 keys — **0 unexpected responses**
+(p99 36 ms; 1,067 correct 429s: per-key quotas + per-IP throttle shedding
+load as designed). Endpoint E2E: **20/20 pass**.
 
 Run them (provision keys first, see above):
 
