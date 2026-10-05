@@ -9,6 +9,14 @@
 
 # Go build output
 /bin/
+/api
+
+# Terraform runtime (never commit cache, state, or plans)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
 
 # Environment files
 .env
