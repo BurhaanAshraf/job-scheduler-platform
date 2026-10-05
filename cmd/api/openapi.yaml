@@ -32,6 +32,7 @@ paths:
       operationId: healthz
       tags:
         - System
+      security: []
       responses:
         '200':
           description: Service healthy
@@ -59,6 +60,7 @@ paths:
       operationId: metrics
       tags:
         - System
+      security: []
       responses:
         '200':
           description: Metrics in Prometheus exposition format
@@ -71,6 +73,58 @@ paths:
                   jobs_completed_total 40
                   jobs_failed_total 2
                   queue_depth 5
+
+  /openapi.yaml:
+    get:
+      summary: Raw OpenAPI specification
+      description: |
+        Returns this OpenAPI document as YAML. Public endpoint.
+      operationId: openapiSpec
+      tags:
+        - System
+      security: []
+      responses:
+        '200':
+          description: OpenAPI document in YAML format
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+  /docs:
+    get:
+      summary: Interactive API documentation
+      description: |
+        Swagger UI backed by /openapi.yaml. Public endpoint.
+      operationId: docs
+      tags:
+        - System
+      security: []
+      responses:
+        '200':
+          description: HTML documentation page
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /dashboard:
+    get:
+      summary: Ops dashboard
+      description: |
+        Single-page dashboard (queue depth, recent jobs, dead letters with
+        retry). The page itself is public; its API calls need a key.
+      operationId: dashboard
+      tags:
+        - System
+      security: []
+      responses:
+        '200':
+          description: HTML dashboard page
+          content:
+            text/html:
+              schema:
+                type: string
 
   /v1/jobs:
     post:
@@ -114,19 +168,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limited (60 req/min per API key)
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until next request allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: Idempotency key conflict (same key, different payload)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '429':
-          description: Rate limited
-          headers:
-            Retry-After:
-              schema:
-                type: integer
-              description: Seconds until next request allowed
+        '413':
+          description: Request body exceeds 1 MiB
           content:
             application/json:
               schema:
@@ -184,6 +244,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limited (60 req/min per API key)
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until next request allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /v1/jobs/{id}:
     get:
@@ -216,6 +287,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limited (60 req/min per API key)
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until next request allowed
           content:
             application/json:
               schema:
@@ -256,6 +338,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limited (60 req/min per API key)
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until next request allowed
           content:
             application/json:
               schema:
@@ -311,6 +404,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limited (60 req/min per API key)
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until next request allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Job not found
           content:
@@ -357,8 +461,25 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Job'
+        '400':
+          description: Invalid limit/offset query parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limited (60 req/min per API key)
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until next request allowed
           content:
             application/json:
               schema:
@@ -396,6 +517,23 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limited (60 req/min per API key)
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until next request allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds 1 MiB
           content:
             application/json:
               schema:
@@ -440,6 +578,17 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limited (60 req/min per API key)
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+              description: Seconds until next request allowed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Cron job not found
           content:
@@ -463,7 +612,6 @@ components:
       required:
         - type
         - payload
-        - run_at
         - max_attempts
         - idempotency_key
         - callback_url
@@ -482,7 +630,9 @@ components:
         run_at:
           type: string
           format: date-time
-          description: When to execute the job (RFC3339). Past = immediate.
+          description: |
+            When to execute the job (RFC3339). Past = immediate; omitted
+            (zero time) also means immediate.
           example: "2026-10-04T00:00:00Z"
         max_attempts:
           type: integer

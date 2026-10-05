@@ -363,6 +363,52 @@ func TestCreateJob_InvalidCallbackURL(t *testing.T) {
 	}
 }
 
+func TestCreateJob_PrivateCallbackURLsRejected(t *testing.T) {
+	handler := NewHandler(nil, nil, nil, slog.Default())
+
+	// Offline-safe: all of these are rejected by the syntactic private-host
+	// check, so no DNS lookup is needed.
+	privateURLs := []string{
+		"http://localhost:8080/hook",
+		"http://127.0.0.1:8080/hook",
+		"http://169.254.169.254/hook",
+		"http://192.168.1.10/hook",
+		"http://10.0.0.5/hook",
+	}
+
+	for _, cb := range privateURLs {
+		body := `{
+			"type": "email",
+			"payload": {"message": "hello"},
+			"run_at": "2026-10-05T00:00:00Z",
+			"max_attempts": 3,
+			"idempotency_key": "ssrf-test-key",
+			"callback_url": "` + cb + `"
+		}`
+
+		req := httptest.NewRequestWithContext(context.Background(),
+			http.MethodPost,
+			"/v1/jobs",
+			strings.NewReader(body),
+		)
+
+		recorder := httptest.NewRecorder()
+
+		handler.CreateJob(recorder, req)
+
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("callback_url %q: expected 400, got %d", cb, recorder.Code)
+		}
+		if !strings.Contains(recorder.Body.String(), "internal hosts") {
+			t.Errorf(
+				"callback_url %q: expected internal-hosts error, got %s",
+				cb,
+				recorder.Body.String(),
+			)
+		}
+	}
+}
+
 func TestCreateJob_FutureJobIsScheduled(t *testing.T) {
 	pool := testDBPool(t)
 	redisClient := testRateLimitRedis(t)
@@ -1914,5 +1960,42 @@ func TestHandler_RetryJob(t *testing.T) {
 	case <-callbackCalled:
 	case <-time.After(2 * time.Second):
 		t.Fatal("retried job callback was not executed")
+	}
+}
+
+func TestCreateJob_RejectsTrailingJSON(t *testing.T) {
+	handler := NewHandler(nil, nil, nil, slog.Default())
+	body := `{"type":"email","payload":{},"run_at":"2026-10-05T00:00:00Z","max_attempts":3,"idempotency_key":"trail-1","callback_url":"http://example.com/hook"} {"trailing":true}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/jobs", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.CreateJob(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("trailing JSON: want 400, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateJob_RejectsOversizedBodyWith413(t *testing.T) {
+	handler := NewHandler(nil, nil, nil, slog.Default())
+	big := strings.Repeat("x", (1<<20)+10)
+	body := `{"type":"` + big + `","payload":{},"run_at":"2026-10-05T00:00:00Z","max_attempts":3,"idempotency_key":"big-1","callback_url":"http://example.com/hook"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/jobs", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.CreateJob(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body: want 413, got %d", rec.Code)
+	}
+}
+
+func TestCreateCronJob_RequiresCallbackURL(t *testing.T) {
+	handler := NewHandler(nil, nil, nil, slog.Default())
+	body := `{"cron_expression": "* * * * *", "job_template": {"type":"email","payload":{"to":"a@b.c"},"max_attempts":3}}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/cron-jobs", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.CreateCronJob(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing template callback_url: want 400, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "callback_url") {
+		t.Fatalf("missing template callback_url: error should name the field, got %s", rec.Body.String())
 	}
 }

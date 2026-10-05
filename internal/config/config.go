@@ -42,15 +42,12 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("invalid API_PORT %q: must be a numeric port", cfg.APIPort)
 	}
 	if cfg.LogLevel == "" {
-		return Config{}, errors.New("LOG_LEVEL is required")
+		cfg.LogLevel = "info"
 	}
 	switch cfg.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:
 		return Config{}, fmt.Errorf("invalid LOG_LEVEL %q: must be one of debug, info, warn, error", cfg.LogLevel)
-	}
-	if cfg.RedisAddr == "" {
-		return Config{}, errors.New("REDIS_ADDR is required (host:port)")
 	}
 	pollInterval := os.Getenv("SCHEDULER_POLL_INTERVAL")
 
@@ -67,7 +64,12 @@ func Load() (Config, error) {
 	}
 
 	cfg.PollInterval = parsedPollInterval
-	maxConns, err := strconv.Atoi(os.Getenv("DB_MAX_CONNS"))
+	maxConnsRaw := os.Getenv("DB_MAX_CONNS")
+	if maxConnsRaw == "" {
+		cfg.DBMaxConns = 10
+		return cfg, nil
+	}
+	maxConns, err := strconv.Atoi(maxConnsRaw)
 	if err != nil || maxConns <= 0 {
 		return Config{}, errors.New("DB_MAX_CONNS must be a positive integer")
 	}

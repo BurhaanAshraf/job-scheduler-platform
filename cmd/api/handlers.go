@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -17,6 +20,7 @@ import (
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/repository"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/scheduler"
 	"github.com/BurhaanAshraf/job-scheduler-platform/internal/stream"
+	"github.com/BurhaanAshraf/job-scheduler-platform/internal/validator"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -75,14 +79,11 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 
 	var req CreateJobRequest
 
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		api.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", "invalid request body")
+	if !decodeJSONBody(w, r, &req, "invalid request body") {
 		return
 	}
 
-	if err := validateCreateJobRequest(req); err != nil {
+	if err := validateCreateJobRequest(r.Context(), req); err != nil {
 		api.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
@@ -364,6 +365,29 @@ func (h *Handler) DeleteJob(w http.ResponseWriter, r *http.Request) {
 
 }
 
+// decodeJSONBody decodes a single JSON object with unknown fields rejected.
+// Trailing garbage after the first value is a 400 (it is never a valid
+// request), and bodies over maxBodyBytes are a 413, not a 400, so clients
+// can distinguish "too large" from "malformed".
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, malformedMsg string) bool {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			api.WriteError(w, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE", "request body exceeds 1 MiB")
+			return false
+		}
+		api.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", malformedMsg)
+		return false
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		api.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", malformedMsg)
+		return false
+	}
+	return true
+}
+
 // jsonPayloadEqual compares two JSON payloads semantically. Byte comparison
 // is wrong here because Postgres jsonb re-serializes documents (whitespace,
 // key order), so a byte-identical replay from the client would otherwise
@@ -379,7 +403,7 @@ func jsonPayloadEqual(a, b json.RawMessage) bool {
 	return reflect.DeepEqual(va, vb)
 }
 
-func validateCreateJobRequest(req CreateJobRequest) error {
+func validateCreateJobRequest(ctx context.Context, req CreateJobRequest) error {
 	if strings.TrimSpace(req.Type) == "" {
 		return fmt.Errorf("type is required")
 	}
@@ -405,14 +429,20 @@ func validateCreateJobRequest(req CreateJobRequest) error {
 		return fmt.Errorf("callback_url is required")
 	}
 
-	if err := validateCallbackURL(*req.CallbackURL); err != nil {
+	if err := validateCallbackURL(ctx, *req.CallbackURL); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func validateCallbackURL(raw string) error {
+// allowPrivateCallbackIPs mirrors the worker's JOB_SCHEDULER_ALLOW_PRIVATE_IPS
+// flag so submit-time validation enforces exactly what delivery enforces.
+// Dev-only: set "true" in compose to reach the in-network demo sink.
+// Production task definitions omit it, keeping the guard strict.
+var allowPrivateCallbackIPs = os.Getenv("JOB_SCHEDULER_ALLOW_PRIVATE_IPS") == "true"
+
+func validateCallbackURL(ctx context.Context, raw string) error {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || !u.IsAbs() || u.Host == "" {
 		return fmt.Errorf("callback_url must be a valid absolute URL")
@@ -422,6 +452,26 @@ func validateCallbackURL(raw string) error {
 	}
 	if isPrivateHost(u.Hostname()) {
 		return fmt.Errorf("callback_url must not target internal hosts")
+	}
+	// Fail fast on DNS names that resolve to private/link-local addresses
+	// (DNS-rebinding style bypass of the string check above). This applies
+	// the same rule the worker enforces at delivery, so a submit that
+	// passes here cannot fail validation later. An unresolvable host is
+	// accepted: delivery-time validation is authoritative and fails the
+	// job with a clear error, so transient DNS blips never bounce valid
+	// submissions.
+	if _, err := validator.ValidateCallbackURL(
+		ctx,
+		raw,
+		validator.Config{AllowPrivateIPs: allowPrivateCallbackIPs},
+	); err != nil {
+		if errors.Is(err, validator.ErrPrivateAddress) ||
+			errors.Is(err, validator.ErrBlockedHost) {
+			return fmt.Errorf("callback_url must not target internal hosts")
+		}
+		if errors.Is(err, validator.ErrInvalidURL) {
+			return fmt.Errorf("callback_url must be a valid absolute URL")
+		}
 	}
 	return nil
 }
@@ -613,15 +663,7 @@ func (h *Handler) CreateCronJob(w http.ResponseWriter, r *http.Request) {
 
 	var req CreateCronJobRequest
 
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		api.WriteError(
-			w,
-			http.StatusBadRequest,
-			"INVALID_REQUEST",
-			"invalid JSON body",
-		)
+	if !decodeJSONBody(w, r, &req, "invalid JSON body") {
 		return
 	}
 
@@ -666,15 +708,19 @@ func (h *Handler) CreateCronJob(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", "job_template must be a valid object")
 		return
 	}
-	if strings.TrimSpace(tpl.Type) == "" || len(tpl.Payload) == 0 || tpl.MaxAttempts <= 0 || tpl.MaxAttempts > maxAttemptsLimit {
-		api.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", "job_template must include type, payload, and max_attempts (1-100)")
+	if strings.TrimSpace(tpl.Type) == "" || len(tpl.Type) > maxTypeLen || len(tpl.Payload) == 0 || tpl.MaxAttempts <= 0 || tpl.MaxAttempts > maxAttemptsLimit {
+		api.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", "job_template must include type (max 128 chars), payload, and max_attempts (1-100)")
 		return
 	}
-	if tpl.CallbackURL != nil && strings.TrimSpace(*tpl.CallbackURL) != "" {
-		if err := validateCallbackURL(*tpl.CallbackURL); err != nil {
-			api.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
-			return
-		}
+	// callback_url is required: instances spawned from this template have
+	// nowhere to deliver without it, and the tick path would fail them.
+	if tpl.CallbackURL == nil || strings.TrimSpace(*tpl.CallbackURL) == "" {
+		api.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", "job_template.callback_url is required")
+		return
+	}
+	if err := validateCallbackURL(r.Context(), *tpl.CallbackURL); err != nil {
+		api.WriteError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
 	}
 
 	now := time.Now().UTC()
@@ -734,15 +780,7 @@ func (h *Handler) UpdateCronJob(w http.ResponseWriter, r *http.Request) {
 
 	var req UpdateCronJobRequest
 
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		api.WriteError(
-			w,
-			http.StatusBadRequest,
-			"INVALID_REQUEST",
-			"invalid JSON body",
-		)
+	if !decodeJSONBody(w, r, &req, "invalid JSON body") {
 		return
 	}
 

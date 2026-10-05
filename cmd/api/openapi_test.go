@@ -148,7 +148,10 @@ func TestOpenAPIContract(t *testing.T) {
 			body: map[string]interface{}{
 				"type": "test", "payload": map[string]string{"msg": "hello"},
 				"run_at": "2020-01-01T00:00:00Z", "max_attempts": 3,
-				"idempotency_key": "openapi-test-valid-1", "callback_url": "http://example.com/hook",
+				// Unique per run: jobs persist in the shared test DB, so a
+				// fixed key replays as 200 on reruns instead of 201.
+				"idempotency_key": "openapi-test-valid-1-" + uuid.NewString(),
+				"callback_url":    "http://example.com/hook",
 			},
 			expectedStatus: 201,
 			validate:       validateJobCreatedResponse,

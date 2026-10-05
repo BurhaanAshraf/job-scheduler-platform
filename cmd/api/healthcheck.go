@@ -17,7 +17,9 @@ func runHealthcheck() int {
 		port = "4000"
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%s/healthz", port)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// /healthz checks Postgres + Redis sequentially (up to ~4s worst case),
+	// so the probe budget must exceed that plus scheduling slack.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

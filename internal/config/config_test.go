@@ -87,3 +87,32 @@ func TestLoad_DBDsnFallback(t *testing.T) {
 		t.Fatalf("fallback DSN not honored: %q", cfg.DBDSN)
 	}
 }
+
+func TestLoad_OptionalEnvDefaults(t *testing.T) {
+	baseEnv(t)
+	_ = os.Unsetenv("LOG_LEVEL")
+	_ = os.Unsetenv("DB_MAX_CONNS")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load with unset optional env: %v", err)
+	}
+	if cfg.LogLevel != "info" {
+		t.Fatalf("default LogLevel = %q, want info", cfg.LogLevel)
+	}
+	if cfg.DBMaxConns != 10 {
+		t.Fatalf("default DBMaxConns = %d, want 10", cfg.DBMaxConns)
+	}
+}
+
+func TestLoad_RejectsBadOptionalEnv(t *testing.T) {
+	baseEnv(t)
+	setEnv(t, "LOG_LEVEL", "verbose")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load with LOG_LEVEL=verbose: want error, got nil")
+	}
+	setEnv(t, "LOG_LEVEL", "info")
+	setEnv(t, "DB_MAX_CONNS", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load with DB_MAX_CONNS=0: want error, got nil")
+	}
+}

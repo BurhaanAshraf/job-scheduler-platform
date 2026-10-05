@@ -67,65 +67,83 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	submitted, err := c.redis.Get(ctx, JobsSubmittedKey).Int64()
-	if err != nil && err != redis.Nil {
+	submitted, submittedOK := int64(0), true
+	if v, err := c.redis.Get(ctx, JobsSubmittedKey).Int64(); err != nil && err != redis.Nil {
+		// Report the error only: emitting a zero-valued sample alongside
+		// the invalid metric would both alarm and mislead dashboards.
 		ch <- prometheus.NewInvalidMetric(
 			c.jobsSubmitted,
 			fmt.Errorf("read submitted jobs metric: %w", err),
 		)
-		submitted = 0
+		submittedOK = false
+	} else {
+		submitted = v
 	}
 
-	completed, err := c.redis.Get(ctx, JobsCompletedKey).Int64()
-	if err != nil && err != redis.Nil {
+	completed, completedOK := int64(0), true
+	if v, err := c.redis.Get(ctx, JobsCompletedKey).Int64(); err != nil && err != redis.Nil {
 		ch <- prometheus.NewInvalidMetric(
 			c.jobsCompleted,
 			fmt.Errorf("read completed jobs metric: %w", err),
 		)
-		completed = 0
+		completedOK = false
+	} else {
+		completed = v
 	}
 
-	failed, err := c.redis.Get(ctx, JobsFailedKey).Int64()
-	if err != nil && err != redis.Nil {
+	failed, failedOK := int64(0), true
+	if v, err := c.redis.Get(ctx, JobsFailedKey).Int64(); err != nil && err != redis.Nil {
 		ch <- prometheus.NewInvalidMetric(
 			c.jobsFailed,
 			fmt.Errorf("read failed jobs metric: %w", err),
 		)
-		failed = 0
+		failedOK = false
+	} else {
+		failed = v
 	}
 
-	queueDepth, err := stream.QueueBacklog(ctx, c.redis)
-	if err != nil {
+	queueDepth, depthOK := int64(0), true
+	if v, err := stream.QueueBacklog(ctx, c.redis); err != nil {
 		ch <- prometheus.NewInvalidMetric(
 			c.queueDepth,
 			fmt.Errorf("read queue depth: %w", err),
 		)
-		queueDepth = 0
+		depthOK = false
+	} else {
+		queueDepth = v
 	}
 
-	ch <- prometheus.MustNewConstMetric(
-		c.jobsSubmitted,
-		prometheus.CounterValue,
-		float64(submitted),
-	)
+	if submittedOK {
+		ch <- prometheus.MustNewConstMetric(
+			c.jobsSubmitted,
+			prometheus.CounterValue,
+			float64(submitted),
+		)
+	}
 
-	ch <- prometheus.MustNewConstMetric(
-		c.jobsCompleted,
-		prometheus.CounterValue,
-		float64(completed),
-	)
+	if completedOK {
+		ch <- prometheus.MustNewConstMetric(
+			c.jobsCompleted,
+			prometheus.CounterValue,
+			float64(completed),
+		)
+	}
 
-	ch <- prometheus.MustNewConstMetric(
-		c.jobsFailed,
-		prometheus.CounterValue,
-		float64(failed),
-	)
+	if failedOK {
+		ch <- prometheus.MustNewConstMetric(
+			c.jobsFailed,
+			prometheus.CounterValue,
+			float64(failed),
+		)
+	}
 
-	ch <- prometheus.MustNewConstMetric(
-		c.queueDepth,
-		prometheus.GaugeValue,
-		float64(queueDepth),
-	)
+	if depthOK {
+		ch <- prometheus.MustNewConstMetric(
+			c.queueDepth,
+			prometheus.GaugeValue,
+			float64(queueDepth),
+		)
+	}
 }
 
 func Increment(ctx context.Context, redisClient *redis.Client, key string) error {
