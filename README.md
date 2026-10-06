@@ -89,7 +89,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-This builds images from `Dockerfile.api`, `Dockerfile.scheduler`, `Dockerfile.worker`, `Dockerfile.callback`, `Dockerfile.apikey`, `Dockerfile.migrate`, starts `postgres` and `redis` with health checks, applies `migrations/` via the `migrate` service, then starts `api`, `scheduler`, `worker`, and `callback`.
+This builds images from `Dockerfile.api`, `Dockerfile.scheduler`, `Dockerfile.worker`, `Dockerfile.callback`, `Dockerfile.apikey`, starts `postgres` and `redis` with health checks, applies `migrations/` via the `migrate` service (prebuilt `migrate/migrate` image; `Dockerfile.migrate` is the separate ECS ops image), then starts `api`, `scheduler`, `worker`, and `callback`.
 
 **3. Confirm the platform is awake.**
 
@@ -430,10 +430,37 @@ Public hosting helper: `DOMAIN=jobs.example.com docker compose --profile public 
 | `curl localhost:4000/healthz` → `503` | Postgres/Redis not ready yet; wait for health checks, then retry |
 | `401` on `/v1/*` | `Authorization: Bearer $API_KEY` header missing/wrong; re-run the `apikey` command and re-export |
 | `400` SSRF on submit | Locally you must use `http://callback:8080/hook`; `http://localhost:...` is rejected by design |
-| `409` on submit | `idempotency_key` reused with different body — use a fresh key |
+| `409` on submit | `idempotency_key` is globally unique — reused with different body returns `409`; replays return `200` with the original id, no new row |
 | `429` + `Retry-After` | 60 req/min/key exceeded; wait the seconds shown |
+| `500 failed to schedule job` on submit | Row IS in Postgres (check `GET /v1/jobs`); Redis enqueue failed transiently — the scheduler outbox reconciler re-enqueues it |
 | No cron instances | `cron_expression` must be 5-field; `* * * * *` fires each minute — allow ~70s, then check `GET /v1/jobs` and `/hits` |
-| Start completely fresh | `docker compose down -v` then `docker compose up -d --build` |
+| `failed to create network ... Failed to Setup IP tables` | Host firewall flushed Docker's chains (common with UFW `DEFAULT_FORWARD_POLICY="DROP"`): `sudo systemctl restart docker`, then `docker compose up -d`. Durable fix: set `DEFAULT_FORWARD_POLICY="ACCEPT"` in `/etc/default/ufw`, `sudo ufw reload`, restart docker again |
+| Port `address already in use` (4000/8080) | Another process holds the host port; stop it or remap the host side in `docker-compose.yml` |
+| Start completely fresh | `docker compose down -v` then `docker compose up -d --build` (note: `down -v` deletes all jobs and keys) |
+
+### Verifying data directly
+
+Jobs and keys are global (no per-key isolation). `GET /v1/jobs` returns oldest-first with default `limit=20` — use `?limit=100` to see recent work; the dashboard sorts newest-first client-side.
+
+```bash
+# Key is valid?
+curl -s -o /dev/null -w "%{http_code}\n" localhost:4000/v1/jobs?limit=1 -H "Authorization: Bearer $API_KEY"
+# 200 = good; 401 = wrong/revoked key (re-provision and re-export)
+
+# Jobs in Postgres (newest first)
+docker compose exec -T postgres psql -U burhaan -d job_scheduler \
+  -c "SELECT id, type, status, attempts, idempotency_key, created_at FROM jobs ORDER BY created_at DESC LIMIT 20;"
+
+# Keys in Postgres: only the SHA-256 hash is stored, the raw key is printed
+# once by the apikey command and never persisted — you cannot SELECT the raw key back
+docker compose exec -T postgres psql -U burhaan -d job_scheduler \
+  -c "SELECT id, client_name, created_at, revoked_at FROM api_keys ORDER BY created_at DESC LIMIT 20;"
+
+# Global Prometheus counters (public, no auth; lifetime totals across all keys)
+curl -s localhost:4000/metrics | grep -E 'jobs_(submitted|completed|failed)_total|queue_depth'
+```
+
+The dashboard at `http://localhost:4000/dashboard` prompts for an API key (stored in `sessionStorage`): job tables and dead letters need any valid key and show global data, while the stat cards come from public `/metrics` and are identical for every key — there is no per-key breakdown by design.
 
 ## Contributing
 

@@ -10,6 +10,7 @@
 # Go build output
 /bin/
 /api
+/apikey
 /scheduler
 /worker
 /callback

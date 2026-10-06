@@ -68,7 +68,8 @@ Plus `callback` (demo sink), `apikey` (key provisioning CLI), `migrate`
 4. **Recovery**: PEL reclaim (60 s idle, 10/30 s), `NOGROUP` self-heal, group
    ID `0` redelivery, generation fencing against stale/cancelled work.
 5. **Multi-tenancy**: SHA-256-hashed keys, 60/min sliding windows with
-   `Retry-After`, per-key idempotency namespaces.
+   `Retry-After`, globally unique idempotency keys (replays return the same
+   job across all keys).
 6. **Ops**: health-gated ALB, lag-based `queue_depth`, 5 alarms + budget
    guardrail → SNS, JSON logs keyed by `job_id`, dashboard with retry button.
 7. **Tradeoffs** (say these explicitly): Postgres+Redis over one system

@@ -20,6 +20,6 @@ COPY --from=builder /api /api
 USER 65532
 EXPOSE 4000
 
-HEALTHCHECK --interval=10s --timeout=3s --retries=5 --start-period=15s CMD ["/api", "-healthcheck"]
+HEALTHCHECK --interval=10s --timeout=10s --retries=5 --start-period=15s CMD ["/api", "-healthcheck"]
 
 ENTRYPOINT ["/api"]

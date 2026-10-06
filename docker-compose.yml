@@ -9,17 +9,19 @@ services:
       test: ["CMD-SHELL", "pg_isready -U burhaan -d job_scheduler"]
       interval: 5s
       timeout: 3s
-      retries: 5
-      start_period: 5s
+      retries: 10
+      start_period: 10s
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["sh", "-c", "if [ -z \"$REDIS_PASSWORD\" ]; then exec redis-server --appendonly yes; else exec redis-server --appendonly yes --requirepass \"$REDIS_PASSWORD\"; fi"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "if [ -z \"$REDIS_PASSWORD\" ]; then redis-cli ping | grep -q PONG; else redis-cli -a \"$REDIS_PASSWORD\" ping | grep -q PONG; fi"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -60,7 +62,7 @@ services:
     healthcheck:
       test: ["CMD", "/api", "-healthcheck"]
       interval: 10s
-      timeout: 3s
+      timeout: 10s
       retries: 5
       start_period: 15s
     depends_on:
@@ -133,6 +135,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      callback:
+        condition: service_healthy
     restart: unless-stopped
     # Scale with: docker compose up --scale worker=2
 
@@ -178,7 +182,7 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # TLS reverse proxy for PUBLIC hosting (docs/HOSTING.md). Off by default;
+  # TLS reverse proxy for PUBLIC hosting (see README Deployment section). Off by default;
   # start with: DOMAIN=jobs.example.com docker compose --profile public up -d
   # Requires the domain's DNS A-record to point at this host first.
   proxy:
@@ -196,6 +200,8 @@ services:
       DOMAIN: ${DOMAIN:-}
     depends_on:
       api:
+        condition: service_healthy
+      callback:
         condition: service_healthy
     profiles: ["public"]
     restart: unless-stopped

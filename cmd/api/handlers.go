@@ -456,7 +456,12 @@ func validateCallbackURL(ctx context.Context, raw string) error {
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("callback_url must use http or https")
 	}
-	if isPrivateHost(u.Hostname()) {
+	// Literal private/internal hostnames are rejected up front, but only
+	// when private IPs are not explicitly allowed: with
+	// JOB_SCHEDULER_ALLOW_PRIVATE_IPS=true (local compose demo sink) the
+	// DNS-aware validator below is authoritative so submit-time and
+	// delivery-time enforcement agree.
+	if !allowPrivateCallbackIPs && isPrivateHost(u.Hostname()) {
 		return fmt.Errorf("callback_url must not target internal hosts")
 	}
 	// Fail fast on DNS names that resolve to private/link-local addresses
