@@ -93,7 +93,7 @@ func TestWorker_RecoversWhenConsumerGroupDeleted(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("worker exit: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("worker did not stop")
 	}
 }

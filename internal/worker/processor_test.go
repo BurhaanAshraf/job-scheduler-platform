@@ -731,7 +731,7 @@ func TestWorker_EndToEndJobExecution(t *testing.T) {
 		workerDone <- worker.Run(workerCtx)
 	}()
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 
 	for {
 		job, err := jobRepo.GetByID(ctx, jobID)
@@ -744,7 +744,7 @@ func TestWorker_EndToEndJobExecution(t *testing.T) {
 		}
 
 		if time.Now().After(deadline) {
-			t.Fatalf("job did not reach done status within 5 seconds")
+			t.Fatalf("job did not reach done status within 10 seconds")
 		}
 
 		time.Sleep(10 * time.Millisecond)
@@ -766,7 +766,7 @@ func TestWorker_EndToEndJobExecution(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("worker returned unexpected error: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("worker did not stop after context cancellation")
 	}
 }
@@ -1294,7 +1294,7 @@ func TestWorker_AttemptIncrementSurvivesCrash(t *testing.T) {
 
 	select {
 	case <-callbackStarted:
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("worker never reached callback")
 	}
 

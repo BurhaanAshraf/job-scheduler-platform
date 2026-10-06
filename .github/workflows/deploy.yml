@@ -4,8 +4,10 @@ name: Deploy to ECS
 # then smoke-test the live ALB. Prod deploys via manual dispatch only.
 # No static AWS keys (14.1): auth is OIDC via the Terraform-managed role.
 on:
-  push:
-    branches: ["main"]
+  # NOTE: automatic deploy on push to main is intentionally OFF until the
+  # AWS side is wired (OIDC deploy role + repo secrets). Merging currently
+  # only runs CI. Re-enable the push trigger (and delete this note) once a
+  # manual workflow_dispatch deploy has gone green end to end.
   workflow_dispatch:
     inputs:
       environment:

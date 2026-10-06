@@ -107,7 +107,7 @@ jobs:
         run: go vet ./...
       # Serial, no cache: integration tests share one Postgres + Redis.
       - name: Test with race detector
-        run: go test -race ./... -p 1 -count=1 -coverprofile=coverage.out
+        run: go test -race ./... -p 1 -count=1 -coverprofile=coverage.out 2>&1 | tee test.log
       - name: Check coverage threshold (70% on internal/)
         run: |
           # NOTE: coverprofile lines start with the full module path
@@ -126,6 +126,13 @@ jobs:
           name: coverage
           path: coverage.out
           if-no-files-found: error
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: test.log
+          if-no-files-found: warn
 
   docker:
     name: docker build
