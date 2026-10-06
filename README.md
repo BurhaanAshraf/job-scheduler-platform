@@ -2,8 +2,6 @@
 
 [![CI](https://github.com/BurhaanAshraf/job-scheduler-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/BurhaanAshraf/job-scheduler-platform/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/go-1.27-blue)](go.mod)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Docker Compose](https://img.shields.io/badge/docker-compose-ready-blue)](docker-compose.yml)
 
 A durable background-job platform. Submit work over HTTP and the platform runs it now, later, or on a recurring schedule — delivering it to your webhook, retrying with backoff on failure, and parking exhausted work in a dead-letter queue for inspection and retry.
 
