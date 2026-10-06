@@ -183,10 +183,9 @@ func TestIsPrivateIP(t *testing.T) {
 				if err == nil {
 					t.Errorf("expected error for private IP %s", tc.ip)
 				}
-			} else {
-				// For public IPs, validation might fail due to DNS but not due to private IP check
-				// We're mainly testing the private IP detection logic
 			}
+			// NOTE: public IPs may still fail on DNS; only the private-IP
+			// verdict is asserted above, which is what this test covers.
 		})
 	}
 }

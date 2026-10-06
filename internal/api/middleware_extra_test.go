@@ -34,7 +34,7 @@ func TestRecoveryCatchesPanic(t *testing.T) {
 	h := Recovery(log, next)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -56,7 +56,7 @@ func TestRecoveryPassThrough(t *testing.T) {
 	h := Recovery(log, next)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	if rec.Code != http.StatusTeapot {
 		t.Fatalf("expected 418, got %d", rec.Code)
 	}

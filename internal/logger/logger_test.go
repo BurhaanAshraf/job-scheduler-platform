@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 )
@@ -40,7 +41,7 @@ func TestNewWithLevel(t *testing.T) {
 	if l == nil {
 		t.Fatal("NewWithLevel returned nil")
 	}
-	if !l.Enabled(nil, slog.LevelDebug) {
+	if !l.Enabled(context.TODO(), slog.LevelDebug) {
 		t.Error("debug-level logger should enable debug records")
 	}
 	l.Debug("debug line")

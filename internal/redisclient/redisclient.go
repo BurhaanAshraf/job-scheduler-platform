@@ -15,9 +15,10 @@ func New(ctx context.Context, cfg config.Config) (*redis.Client, error) {
 		PoolSize:     10,
 		MinIdleConns: 2,
 		DialTimeout:  2 * time.Second,
-		// Must comfortably exceed the worker's blocking XREADGROUP timeout
-		// (2s): with zero slack every long-poll becomes an i/o timeout
-		// under scheduling jitter, spamming the worker error loop.
+		// Must comfortably exceed the longest blocking XREADGROUP timeout
+		// (worker read block, well under a second): with zero slack every
+		// long-poll becomes an i/o timeout under scheduling jitter,
+		// spamming the worker error loop.
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 2 * time.Second,
 		PoolTimeout:  3 * time.Second,

@@ -39,7 +39,7 @@ func Server(log *slog.Logger, h *Handler, healthHandler *HealthHandler, limiter 
 	// OpenAPI spec endpoint
 	mux.HandleFunc("GET /openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
-		w.Write([]byte(openAPISpec))
+		_, _ = w.Write([]byte(openAPISpec))
 	})
 
 	// Swagger UI
@@ -55,13 +55,15 @@ func Server(log *slog.Logger, h *Handler, healthHandler *HealthHandler, limiter 
 			SpecURL: "/openapi.yaml",
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		tmpl.Execute(w, data)
+		if err := tmpl.Execute(w, data); err != nil {
+			log.Error("render swagger UI failed", "error", err)
+		}
 	})
 
 	// Dashboard
 	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(dashboardHTML))
+		_, _ = w.Write([]byte(dashboardHTML))
 	})
 
 	// IP throttle outside auth: bounds unauthenticated traffic (key

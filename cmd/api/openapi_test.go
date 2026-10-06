@@ -48,7 +48,7 @@ func TestOpenAPIContract(t *testing.T) {
 	}
 
 	redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	if err := redisClient.Ping(ctx).Err(); err != nil {
 		t.Fatalf("failed to ping redis: %v", err)
@@ -100,7 +100,9 @@ func TestOpenAPIContract(t *testing.T) {
 			expectedStatus: 200,
 			validate: func(t *testing.T, resp *http.Response) {
 				var result map[string]string
-				json.NewDecoder(resp.Body).Decode(&result)
+				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+					t.Fatalf("decode healthz: %v", err)
+				}
 				if result["status"] != "ok" {
 					t.Errorf("expected status=ok, got %v", result["status"])
 				}
@@ -191,10 +193,10 @@ func TestOpenAPIContract(t *testing.T) {
 			var req *http.Request
 			if tc.body != nil {
 				bodyBytes, _ := json.Marshal(tc.body)
-				req = httptest.NewRequest(tc.method, tc.path, bytes.NewReader(bodyBytes))
+				req = httptest.NewRequestWithContext(context.Background(), tc.method, tc.path, bytes.NewReader(bodyBytes))
 				req.Header.Set("Content-Type", "application/json")
 			} else {
-				req = httptest.NewRequest(tc.method, tc.path, nil)
+				req = httptest.NewRequestWithContext(context.Background(), tc.method, tc.path, nil)
 			}
 
 			// Add auth for authenticated tests
@@ -270,7 +272,7 @@ func TestResponseHeaders(t *testing.T) {
 	defer pool.Close()
 
 	redisClient := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	// Insert test API key
 	apiKey := "test-openapi-key"
@@ -299,7 +301,7 @@ func TestResponseHeaders(t *testing.T) {
 	router := Server(log, handler, NewHealthHandler(healthChecker), limiter, nil)
 
 	// Test 429 includes Retry-After header
-	req := httptest.NewRequest("POST", "/v1/jobs", bytes.NewReader([]byte(`{
+	req := httptest.NewRequestWithContext(context.Background(), "POST", "/v1/jobs", bytes.NewReader([]byte(`{
 		"type":"test","payload":{},"run_at":"2020-01-01T00:00:00Z",
 		"max_attempts":1,"idempotency_key":"ratelimit-test","callback_url":"http://example.com/hook"
 	}`)))

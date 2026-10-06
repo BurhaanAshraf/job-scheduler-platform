@@ -148,8 +148,8 @@ func main() {
 					atomic.AddInt64(&errors, 1)
 					return
 				}
-				defer resp.Body.Close()
-				io.Copy(io.Discard, resp.Body)
+				defer func() { _ = resp.Body.Close() }()
+				_, _ = io.Copy(io.Discard, resp.Body)
 
 				switch resp.StatusCode {
 				case 200, 201:

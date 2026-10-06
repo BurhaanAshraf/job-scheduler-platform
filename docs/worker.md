@@ -25,6 +25,11 @@ groups guarantee each message is delivered to exactly one consumer at a time.
    place instead of error-looping until restart (covers key eviction,
    `FLUSHDB`, Redis restore/failover).
 6. Graceful shutdown on `SIGINT`/`SIGTERM` via context cancellation.
+   The blocking stream read runs in a child goroutine selected against the
+   shutdown signal: a canceled context does not abort an in-flight
+   `XREADGROUP` (it runs to the socket deadline, ~10 s past the block), so
+   the loop would otherwise hang every deploy that lands mid-poll. Stop
+   latency is one short block plus one iteration, never one deadline.
 
 ## Processing one message (`Processor.Process`)
 

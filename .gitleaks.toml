@@ -1,0 +1,9 @@
+# Gitleaks allowlist: the exempted value below is a negative-auth-test
+# fixture ("invalid-key-12345" is self-evidently fake and only used where a
+# request MUST fail authentication). Scoped to the exact file and value, so
+# any real secret anywhere — including new values in this file — still fails
+# the build.
+[[allowlists]]
+description = "Negative-auth-test fixture in the e2e harness, never a provisioned credential."
+paths = ["tools/e2e/main.go"]
+regexes = ["invalid-key-12345"]

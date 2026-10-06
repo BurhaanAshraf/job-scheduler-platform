@@ -16,6 +16,12 @@ const (
 	reclaimInterval   = 30 * time.Second
 	stalePendingAfter = 60 * time.Second
 	reclaimBatch      = 10
+	// readBlock bounds every blocking stream read. It must stay short:
+	// a canceled context does NOT abort an in-flight XREADGROUP (the
+	// read runs to the socket deadline, ~block+10s), so stop latency
+	// equals this block plus one iteration. 500ms keeps stops prompt
+	// while idle polling stays at a negligible 2 QPS per worker.
+	readBlock = 500 * time.Millisecond
 	// maxPoisonDeliveries bounds redelivery of a message that never
 	// progresses: at this many XREADGROUP/XCLAIM deliveries the message
 	// is quarantined to the DLQ instead of reclaimed again. Must stay
@@ -66,8 +72,36 @@ func (w *Worker) Run(ctx context.Context) error {
 		default:
 		}
 
-		messages, err := stream.ReadNext(ctx, w.redis, w.consumer)
-		if err != nil {
+		// The blocking read runs in a child goroutine with the result
+		// selected against ctx: a canceled context does NOT abort an
+		// in-flight XREADGROUP (it runs to the socket deadline, ~10s
+		// past the block), so selecting here is what makes stop prompt. The orphaned read always terminates by its deadline
+		// (sooner on client close) and its buffered send never blocks.
+		type readResult struct {
+			messages []stream.Message
+			err      error
+		}
+		readCh := make(chan readResult, 1)
+		go func() {
+			msgs, rerr := stream.ReadNextWithTimeout(ctx, w.redis, w.consumer, readBlock)
+			readCh <- readResult{messages: msgs, err: rerr}
+		}()
+
+		var messages []stream.Message
+		var readErr error
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case res := <-readCh:
+			messages = res.messages
+			readErr = res.err
+		}
+
+		if readErr != nil {
+			err := readErr
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if errors.Is(err, context.Canceled) {
 				return err
 			}

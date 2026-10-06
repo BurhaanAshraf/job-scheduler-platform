@@ -1252,6 +1252,7 @@ func TestWorker_AttemptIncrementSurvivesCrash(t *testing.T) {
 		context.Background(),
 		"go",
 		"build",
+		"-buildvcs=false",
 		"-o",
 		workerBinary,
 		"./cmd/worker",

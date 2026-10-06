@@ -61,17 +61,6 @@ func envInt(name string, def int) int {
 	return def
 }
 
-type outcome struct {
-	endpoint string
-	want     int
-	got      int
-	latency  time.Duration
-}
-
-func call(ctx context.Context, method, path, key string, body any) (int, []byte, time.Duration) {
-	return callFrom(ctx, method, path, key, "", body)
-}
-
 // callFrom adds an X-Forwarded-For source IP. Each stress worker uses a
 // distinct simulated client IP so the per-IP throttle (300/min) does not
 // collapse all workers into one bucket: the run exercises endpoint logic
@@ -96,7 +85,7 @@ func callFrom(ctx context.Context, method, path, key, srcIP string, body any) (i
 	if err != nil {
 		return -1, nil, lat
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, b, lat
 }

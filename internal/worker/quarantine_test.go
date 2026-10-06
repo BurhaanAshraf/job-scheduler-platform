@@ -3,6 +3,8 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,8 +16,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
-	"log/slog"
-	"os"
 )
 
 func quarantineHarness(t *testing.T) (context.Context, *pgxpool.Pool, *redis.Client) {

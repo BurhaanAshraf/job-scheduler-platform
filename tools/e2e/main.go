@@ -20,7 +20,6 @@ var (
 	// Provision with: go run ./cmd/apikey (or the README psql snippet).
 	mainKey        = mustEnv("E2E_API_KEY")
 	rateLimitKey   = envOr("E2E_RATELIMIT_KEY", "")
-	invalidKey     = "invalid-key-12345"
 	validationKeys = []string{envOr("E2E_VALIDATION_KEY_1", ""), envOr("E2E_VALIDATION_KEY_2", "")}
 
 	// runID prefixes every idempotency key so reruns never collide with
@@ -36,6 +35,10 @@ func mustEnv(name string) string {
 	}
 	return v
 }
+
+// wrongCredential fails authentication by design. It is a fixed
+// non-secret placeholder, never a provisioned key.
+const wrongCredential = "wrong-credentials"
 
 func envOr(name, def string) string {
 	if v := os.Getenv(name); v != "" {
@@ -211,7 +214,10 @@ func main() {
 	}
 }
 
-func doRequest(ctx context.Context, method, path, apiKey string, body any, expectedStatus int) (*http.Response, []byte) {
+// doRequest returns the status code and body. Transport errors yield
+// status -1. The response body is fully read and closed inside, so no
+// *http.Response (and no close obligation) ever escapes to callers.
+func doRequest(ctx context.Context, method, path, apiKey string, body any, expectedStatus int) (int, []byte) {
 	var bodyReader io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -223,21 +229,21 @@ func doRequest(ctx context.Context, method, path, apiKey string, body any, expec
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("  ERROR: %v\n", err)
-		return nil, nil
+		return -1, nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != expectedStatus {
 		fmt.Printf("  FAIL: Expected %d, got %d: %s\n", expectedStatus, resp.StatusCode, string(respBody))
-		return resp, respBody
+		return resp.StatusCode, respBody
 	}
-	return resp, respBody
+	return resp.StatusCode, respBody
 }
 
 func testHealthz(ctx context.Context) bool {
 	fmt.Print("Test 1: GET /healthz ... ")
-	resp, _ := doRequest(ctx, "GET", "/healthz", mainKey, nil, 200)
-	if resp == nil {
+	respcode, _ := doRequest(ctx, "GET", "/healthz", mainKey, nil, 200)
+	if respcode < 0 {
 		return false
 	}
 	fmt.Println("PASS")
@@ -246,8 +252,8 @@ func testHealthz(ctx context.Context) bool {
 
 func testMetrics(ctx context.Context) bool {
 	fmt.Print("Test 2: GET /metrics ... ")
-	resp, body := doRequest(ctx, "GET", "/metrics", mainKey, nil, 200)
-	if resp == nil {
+	respcode, body := doRequest(ctx, "GET", "/metrics", mainKey, nil, 200)
+	if respcode < 0 {
 		return false
 	}
 	if bytes.Contains(body, []byte("jobs_submitted_total")) {
@@ -266,12 +272,15 @@ func testCreateJobImmediate(ctx context.Context) string {
 		"max_attempts": 3, "idempotency_key": idem("e2e-immediate-1"),
 		"callback_url": "http://callback:8080/hook",
 	}
-	resp, respBody := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
-	if resp == nil {
+	respcode, respBody := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
+	if respcode < 0 {
 		return ""
 	}
 	var data map[string]string
-	json.Unmarshal(respBody, &data)
+	if err := json.Unmarshal(respBody, &data); err != nil {
+		fmt.Printf("FAIL: decode job id: %v\n", err)
+		return ""
+	}
 	jobID := data["id"]
 	fmt.Printf("PASS (job_id=%s)\n", jobID)
 	return jobID
@@ -285,12 +294,15 @@ func testCreateJobFuture(ctx context.Context) string {
 		"max_attempts": 3, "idempotency_key": idem("e2e-future-1"),
 		"callback_url": "http://callback:8080/hook",
 	}
-	resp, respBody := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
-	if resp == nil {
+	respcode, respBody := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
+	if respcode < 0 {
 		return ""
 	}
 	var data map[string]string
-	json.Unmarshal(respBody, &data)
+	if err := json.Unmarshal(respBody, &data); err != nil {
+		fmt.Printf("FAIL: decode job id: %v\n", err)
+		return ""
+	}
 	jobID := data["id"]
 	fmt.Printf("PASS (job_id=%s)\n", jobID)
 	return jobID
@@ -298,12 +310,15 @@ func testCreateJobFuture(ctx context.Context) string {
 
 func testGetJob(ctx context.Context, jobID string) bool {
 	fmt.Printf("Test 5: GET /v1/jobs/%s ... ", jobID)
-	resp, body := doRequest(ctx, "GET", "/v1/jobs/"+jobID, mainKey, nil, 200)
-	if resp == nil {
+	respcode, body := doRequest(ctx, "GET", "/v1/jobs/"+jobID, mainKey, nil, 200)
+	if respcode < 0 {
 		return false
 	}
 	var data map[string]any
-	json.Unmarshal(body, &data)
+	if err := json.Unmarshal(body, &data); err != nil {
+		fmt.Printf("FAIL: decode job: %v\n", err)
+		return false
+	}
 	if data["id"] == jobID {
 		fmt.Printf("PASS (status=%v)\n", data["status"])
 		return true
@@ -314,12 +329,15 @@ func testGetJob(ctx context.Context, jobID string) bool {
 
 func testListJobs(ctx context.Context) bool {
 	fmt.Print("Test 6: GET /v1/jobs ... ")
-	resp, body := doRequest(ctx, "GET", "/v1/jobs", mainKey, nil, 200)
-	if resp == nil {
+	respcode, body := doRequest(ctx, "GET", "/v1/jobs", mainKey, nil, 200)
+	if respcode < 0 {
 		return false
 	}
 	var data []map[string]any
-	json.Unmarshal(body, &data)
+	if err := json.Unmarshal(body, &data); err != nil {
+		fmt.Printf("FAIL: decode job list: %v\n", err)
+		return false
+	}
 	fmt.Printf("PASS (%d jobs)\n", len(data))
 	return true
 }
@@ -333,21 +351,27 @@ func testIdempotencyReplay(ctx context.Context) bool {
 		"callback_url": "http://callback:8080/hook",
 	}
 	// First request
-	resp1, body1 := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
-	if resp1 == nil {
+	resp1code, body1 := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
+	if resp1code < 0 {
 		return false
 	}
 	var data1 map[string]string
-	json.Unmarshal(body1, &data1)
+	if err := json.Unmarshal(body1, &data1); err != nil {
+		fmt.Printf("FAIL: decode replay response: %v\n", err)
+		return false
+	}
 	id1 := data1["id"]
 
 	// Second request (identical)
-	resp2, body2 := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 200)
-	if resp2 == nil {
+	resp2code, body2 := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 200)
+	if resp2code < 0 {
 		return false
 	}
 	var data2 map[string]string
-	json.Unmarshal(body2, &data2)
+	if err := json.Unmarshal(body2, &data2); err != nil {
+		fmt.Printf("FAIL: decode replay response: %v\n", err)
+		return false
+	}
 	id2 := data2["id"]
 
 	if id1 == id2 {
@@ -366,15 +390,15 @@ func testIdempotencyConflict(ctx context.Context) bool {
 		"max_attempts": 3, "idempotency_key": idem("e2e-idem-1"), // same key
 		"callback_url": "http://callback:8080/hook",
 	}
-	resp, _ := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 409)
-	if resp == nil {
+	respcode, _ := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 409)
+	if respcode < 0 {
 		return false
 	}
-	if resp.StatusCode == 409 {
+	if respcode == 409 {
 		fmt.Println("PASS (409 conflict)")
 		return true
 	}
-	fmt.Printf("FAIL: got %d\n", resp.StatusCode)
+	fmt.Printf("FAIL: got %d\n", respcode)
 	return false
 }
 
@@ -386,16 +410,19 @@ func testCancelJob(ctx context.Context) bool {
 		"max_attempts": 3, "idempotency_key": idem("e2e-cancel-1"),
 		"callback_url": "http://callback:8080/hook",
 	}
-	resp, respBody := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
-	if resp == nil {
+	respcode, respBody := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
+	if respcode < 0 {
 		return false
 	}
 	var data map[string]string
-	json.Unmarshal(respBody, &data)
+	if err := json.Unmarshal(respBody, &data); err != nil {
+		fmt.Printf("FAIL: decode job id: %v\n", err)
+		return false
+	}
 	jobID := data["id"]
 
-	resp2, _ := doRequest(ctx, "DELETE", "/v1/jobs/"+jobID, mainKey, nil, 204)
-	if resp2 == nil {
+	resp2code, _ := doRequest(ctx, "DELETE", "/v1/jobs/"+jobID, mainKey, nil, 204)
+	if resp2code < 0 {
 		return false
 	}
 	fmt.Println("PASS (204)")
@@ -410,26 +437,29 @@ func testCancelRunningJob(ctx context.Context) bool {
 		"max_attempts": 3, "idempotency_key": idem("e2e-cancel-running-1"),
 		"callback_url": "http://callback:8080/hook",
 	}
-	resp, respBody := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
-	if resp == nil {
+	respcode, respBody := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
+	if respcode < 0 {
 		return false
 	}
 	var data map[string]string
-	json.Unmarshal(respBody, &data)
+	if err := json.Unmarshal(respBody, &data); err != nil {
+		fmt.Printf("FAIL: decode job id: %v\n", err)
+		return false
+	}
 	jobID := data["id"]
 
 	// Wait for worker to pick it up
 	time.Sleep(2 * time.Second)
 
-	resp2, _ := doRequest(ctx, "DELETE", "/v1/jobs/"+jobID, mainKey, nil, 409)
-	if resp2 == nil {
+	resp2code, _ := doRequest(ctx, "DELETE", "/v1/jobs/"+jobID, mainKey, nil, 409)
+	if resp2code < 0 {
 		return false
 	}
-	if resp2.StatusCode == 409 {
+	if resp2code == 409 {
 		fmt.Println("PASS (409 conflict)")
 		return true
 	}
-	fmt.Printf("FAIL: got %d\n", resp2.StatusCode)
+	fmt.Printf("FAIL: got %d\n", resp2code)
 	return false
 }
 
@@ -442,23 +472,29 @@ func testRetryDeadJob(ctx context.Context) bool {
 		"max_attempts": 1, "idempotency_key": idem("e2e-retry-1"),
 		"callback_url": "http://callback:8080/hook-fail",
 	}
-	resp, respBody := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
-	if resp == nil {
+	respcode, respBody := doRequest(ctx, "POST", "/v1/jobs", mainKey, body, 201)
+	if respcode < 0 {
 		return false
 	}
 	var data map[string]string
-	json.Unmarshal(respBody, &data)
+	if err := json.Unmarshal(respBody, &data); err != nil {
+		fmt.Printf("FAIL: decode job id: %v\n", err)
+		return false
+	}
 	jobID := data["id"]
 
 	// Wait for it to go dead
 	time.Sleep(5 * time.Second)
 
-	resp2, body2 := doRequest(ctx, "POST", "/v1/jobs/"+jobID+"/retry", mainKey, nil, 200)
-	if resp2 == nil {
+	resp2code, body2 := doRequest(ctx, "POST", "/v1/jobs/"+jobID+"/retry", mainKey, nil, 200)
+	if resp2code < 0 {
 		return false
 	}
 	var data2 map[string]any
-	json.Unmarshal(body2, &data2)
+	if err := json.Unmarshal(body2, &data2); err != nil {
+		fmt.Printf("FAIL: decode retried job: %v\n", err)
+		return false
+	}
 	if data2["status"] == "scheduled" && data2["attempts"].(float64) == 0 {
 		fmt.Printf("PASS (re-queued as scheduled)\n")
 		return true
@@ -469,12 +505,15 @@ func testRetryDeadJob(ctx context.Context) bool {
 
 func testDeadLetters(ctx context.Context) bool {
 	fmt.Print("Test 12: GET /v1/dead-letters ... ")
-	resp, body := doRequest(ctx, "GET", "/v1/dead-letters", mainKey, nil, 200)
-	if resp == nil {
+	respcode, body := doRequest(ctx, "GET", "/v1/dead-letters", mainKey, nil, 200)
+	if respcode < 0 {
 		return false
 	}
 	var data []map[string]any
-	json.Unmarshal(body, &data)
+	if err := json.Unmarshal(body, &data); err != nil {
+		fmt.Printf("FAIL: decode dead letters: %v\n", err)
+		return false
+	}
 	fmt.Printf("PASS (%d dead letters)\n", len(data))
 	return true
 }
@@ -488,12 +527,15 @@ func testCreateCronJob(ctx context.Context) string {
 			"max_attempts": 2, "callback_url": "http://callback:8080/hook",
 		},
 	}
-	resp, respBody := doRequest(ctx, "POST", "/v1/cron-jobs", mainKey, body, 201)
-	if resp == nil {
+	respcode, respBody := doRequest(ctx, "POST", "/v1/cron-jobs", mainKey, body, 201)
+	if respcode < 0 {
 		return ""
 	}
 	var data map[string]float64 // ID is int64
-	json.Unmarshal(respBody, &data)
+	if err := json.Unmarshal(respBody, &data); err != nil {
+		fmt.Printf("FAIL: decode cron id: %v\n", err)
+		return ""
+	}
 	cronID := fmt.Sprintf("%.0f", data["id"])
 	fmt.Printf("PASS (cron_id=%s)\n", cronID)
 	return cronID
@@ -502,8 +544,8 @@ func testCreateCronJob(ctx context.Context) string {
 func testUpdateCronJob(ctx context.Context, cronID string) bool {
 	fmt.Printf("Test 14: PATCH /v1/cron-jobs/%s (disable) ... ", cronID)
 	body := map[string]bool{"enabled": false}
-	resp, _ := doRequest(ctx, "PATCH", "/v1/cron-jobs/"+cronID, mainKey, body, 204)
-	if resp == nil {
+	respcode, _ := doRequest(ctx, "PATCH", "/v1/cron-jobs/"+cronID, mainKey, body, 204)
+	if respcode < 0 {
 		return false
 	}
 	fmt.Println("PASS (204)")
@@ -533,8 +575,8 @@ func testRateLimit(ctx context.Context) bool {
 			fmt.Printf("FAIL: request %d: %v\n", i, err)
 			return false
 		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
 		want := 201
 		if i == 60 {
 			want = 429
@@ -560,15 +602,15 @@ func testSSRFGuard(ctx context.Context) bool {
 		"max_attempts": 1, "idempotency_key": idem("e2e-ssrf-1"),
 		"callback_url": "http://localhost:8080/hook",
 	}
-	resp, _ := doRequest(ctx, "POST", "/v1/jobs", validationKeys[0], body, 400)
-	if resp == nil {
+	respcode, _ := doRequest(ctx, "POST", "/v1/jobs", validationKeys[0], body, 400)
+	if respcode < 0 {
 		return false
 	}
-	if resp.StatusCode == 400 {
+	if respcode == 400 {
 		fmt.Println("PASS (400 rejected)")
 		return true
 	}
-	fmt.Printf("FAIL: got %d\n", resp.StatusCode)
+	fmt.Printf("FAIL: got %d\n", respcode)
 	return false
 }
 
@@ -580,7 +622,7 @@ func testAuthMissingHeader(ctx context.Context) bool {
 	if err != nil || resp == nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == 401 {
 		fmt.Println("PASS (401)")
 		return true
@@ -592,13 +634,13 @@ func testAuthMissingHeader(ctx context.Context) bool {
 func testAuthInvalidKey(ctx context.Context) bool {
 	fmt.Print("Test 18: Auth invalid key ... ")
 	req, _ := http.NewRequestWithContext(ctx, "POST", baseURL+"/v1/jobs", nil)
-	req.Header.Set("Authorization", "Bearer "+invalidKey)
+	req.Header.Set("Authorization", "Bearer "+wrongCredential)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil || resp == nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == 401 {
 		fmt.Println("PASS (401)")
 		return true
@@ -609,15 +651,15 @@ func testAuthInvalidKey(ctx context.Context) bool {
 
 func testInvalidJobID(ctx context.Context) bool {
 	fmt.Print("Test 19: GET /v1/jobs/invalid-id ... ")
-	resp, _ := doRequest(ctx, "GET", "/v1/jobs/not-a-uuid", validationKeys[1], nil, 400)
-	if resp == nil {
+	respcode, _ := doRequest(ctx, "GET", "/v1/jobs/not-a-uuid", validationKeys[1], nil, 400)
+	if respcode < 0 {
 		return false
 	}
-	if resp.StatusCode == 400 {
+	if respcode == 400 {
 		fmt.Println("PASS (400)")
 		return true
 	}
-	fmt.Printf("FAIL: got %d\n", resp.StatusCode)
+	fmt.Printf("FAIL: got %d\n", respcode)
 	return false
 }
 
@@ -630,8 +672,8 @@ func testMaxAttemptsValidation(ctx context.Context) bool {
 		"max_attempts": 0, "idempotency_key": idem("max-attempts-0"),
 		"callback_url": "http://callback:8080/hook",
 	}
-	resp1, _ := doRequest(ctx, "POST", "/v1/jobs", validationKeys[0], body1, 400)
-	if resp1 == nil {
+	resp1code, _ := doRequest(ctx, "POST", "/v1/jobs", validationKeys[0], body1, 400)
+	if resp1code < 0 {
 		return false
 	}
 
@@ -642,15 +684,15 @@ func testMaxAttemptsValidation(ctx context.Context) bool {
 		"max_attempts": 101, "idempotency_key": idem("max-attempts-101"),
 		"callback_url": "http://callback:8080/hook",
 	}
-	resp2, _ := doRequest(ctx, "POST", "/v1/jobs", validationKeys[1], body2, 400)
-	if resp2 == nil {
+	resp2code, _ := doRequest(ctx, "POST", "/v1/jobs", validationKeys[1], body2, 400)
+	if resp2code < 0 {
 		return false
 	}
 
-	if resp1.StatusCode == 400 && resp2.StatusCode == 400 {
+	if resp1code == 400 && resp2code == 400 {
 		fmt.Println("PASS (both 400)")
 		return true
 	}
-	fmt.Printf("FAIL: got %d and %d\n", resp1.StatusCode, resp2.StatusCode)
+	fmt.Printf("FAIL: got %d and %d\n", resp1code, resp2code)
 	return false
 }

@@ -133,13 +133,13 @@ func TestReconcileOutbox_SkipsTerminalJob(t *testing.T) {
 		t.Fatalf("reconcile: %v", err)
 	}
 	if n != 0 {
-		t.Fatalf("reconciled = %d, want 0 for cancelled job", n)
+		t.Fatalf("reconciled = %d, want 0 for cancelled job", n) //nolint:misspell // 'cancelled' is the contractual spelling (DB CHECK constraint)
 	}
 	if left := outboxCountForJob(t, ctx, pool, jobID); left != 0 {
 		t.Fatalf("stale outbox row not cleaned, %d left", left)
 	}
 	if streamHasJobID(t, ctx, redisClient, jobID.String()) {
-		t.Fatalf("cancelled job %q must not dispatch", jobID)
+		t.Fatalf("cancelled job %q must not dispatch", jobID) //nolint:misspell // 'cancelled' is the contractual spelling (DB CHECK constraint)
 	}
 }
 
