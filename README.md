@@ -112,19 +112,18 @@ database and the cache are reachable from the application.
 curl localhost:4000/healthz   # {"status":"ok"}
 ```
 
-**4. Create your first API key.** These commands generate a random key,
-store only its irreversible fingerprint in the database, and print the key
-exactly once — save it somewhere safe, since the original can never be
-recovered.
+**4. Create your first API key.** One command provisions a key through the
+platform's own tooling and prints it exactly once — save it somewhere safe,
+since only an irreversible fingerprint is stored and the original can never
+be recovered. It needs nothing installed beyond Compose itself.
 
 ```bash
-RAW=$(python3 -c 'import secrets;print(secrets.token_hex(32))')
-HASH=$(python3 -c "import hashlib;print(hashlib.sha256('$RAW'.encode()).hexdigest())"
-docker compose exec -T postgres psql -U burhaan -d job_scheduler -c \
-"INSERT INTO api_keys (id, client_name, hashed_key, created_at) VALUES \
-(gen_random_uuid(), 'demo', '$HASH', NOW());"
-echo "API key: $RAW"
+docker compose --profile tools run --rm apikey --client-name demo
+# API key: <your-key>
 ```
+
+Save the printed value as `API_KEY` for the steps below (`export
+API_KEY=<your-key>`), or pass it inline where a command shows `$API_KEY`.
 
 **5. Open the operations dashboard.** Go to
 http://localhost:4000/dashboard and enter your key when asked. You will see
@@ -138,7 +137,7 @@ dashboard shows it completing, and the receiver's page at
 http://localhost:8080 shows the delivery it got.
 
 ```bash
-curl -X POST localhost:4000/v1/jobs -H "Authorization: Bearer $RAW" \
+curl -X POST localhost:4000/v1/jobs -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' -d '{
     "type": "demo", "payload": {"hello":"world"},
     "run_at": "2020-01-01T00:00:00Z", "max_attempts": 3,
@@ -213,6 +212,9 @@ golangci-lint run
 
 **Full test suite.** Tests need the database and cache addresses, so export
 them first (adjust the password to match your local environment file).
+Running from your own machine also needs PostgreSQL and Redis reachable at
+those addresses — install them locally, or rely on the pipeline, which
+provides both as services.
 
 ```bash
 export JOB_SCHEDULER_DB_DSN="postgres://burhaan:<password>@localhost:5432/job_scheduler?sslmode=disable"
@@ -278,10 +280,12 @@ subnets, container image repositories, serverless container hosting behind
 a load balancer with health-gated targets, secrets held in the managed
 secret store and referenced by name, and alarms for failure rate, endpoint
 errors, queue backlog, task health, and monthly spend — all notifying one
-shared channel. Merging to the main branch builds and ships new image
-revisions automatically through short-lived cloud credentials, verifies the
+shared channel. Deploying builds and ships new image
+revisions through short-lived cloud credentials, verifies the
 live health endpoint before declaring success, and rolls back by redeploying
-the previous revision. Every piece of that infrastructure is declared in the
+the previous revision. Deployments currently run by hand until the cloud
+access for automation is wired up; the pipeline already builds, tests, and
+validates everything on every change. Every piece of that infrastructure is declared in the
 infrastructure directory and reviewed like application code, with separate
 lean settings for development and production.
 
@@ -307,7 +311,7 @@ images, and infrastructure formatting and validation.
 Branch from the main line, keep each change focused with a message that
 explains what and why, and make sure formatting, static analysis, and the
 full test suite are green before proposing a merge. The main line always
-stays releasable, because merging to it ships to production.
+stays releasable, because every merge has passed the full pipeline.
 
 ## License
 

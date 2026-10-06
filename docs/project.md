@@ -49,7 +49,7 @@ Plus `callback` (demo sink), `apikey` (key provisioning CLI), `migrate`
 | Docker Compose | full local stack incl. demo sink + optional Caddy TLS profile |
 | AWS ap-south-2: VPC, RDS, ElastiCache, ECR, ECS Fargate, ALB, Secrets Manager, CloudWatch, Budgets | managed data plane, rolling deploys, alarms → SNS |
 | Terraform (S3 state, DynamoDB locks) | every AWS resource reviewed as code; dev/prod via tfvars |
-| GitHub Actions OIDC | no static AWS keys; lint + `-race` tests + image builds + `terraform validate` per PR; `:sha` deploys on merge |
+| GitHub Actions OIDC | no static AWS keys; lint + `-race` tests + image builds + `terraform validate` per PR; `:sha` deploys run by hand until cloud access is wired |
 | Prometheus exposition | `jobs_*_total`, `queue_depth` without an agent |
 | `openapi.yaml` + Swagger UI + static dashboard | contract, interactive docs, and ops UI served by the API itself |
 

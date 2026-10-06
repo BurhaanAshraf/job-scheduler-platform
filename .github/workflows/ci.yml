@@ -149,6 +149,10 @@ jobs:
       # a broken migrate image must fail CI, not production deploys.
       - name: Build migrate image
         run: docker build -f Dockerfile.migrate .
+      # Same story for the profile-gated apikey image (docker compose
+      # build skips the tools profile by default).
+      - name: Build apikey image
+        run: docker build -f Dockerfile.apikey .
 
   # Terraform checks (lint-level on every PR; full plan only when OIDC is
   # wired via vars.AWS_OIDC_PLAN_ENABLED — per-PR path filtering is not

@@ -136,6 +136,27 @@ services:
     restart: unless-stopped
     # Scale with: docker compose up --scale worker=2
 
+  # One-shot key provisioning (ops tooling, not a service; off by default).
+  # Usage: docker compose --profile tools run --rm apikey --client-name demo
+  # Prints the raw key once — save it. Needs no host ports or local Go.
+  apikey:
+    build:
+      context: .
+      dockerfile: Dockerfile.apikey
+    environment:
+      JOB_SCHEDULER_DB_DSN: postgres://burhaan:${POSTGRES_PASSWORD}@postgres:5432/job_scheduler?sslmode=disable
+      REDIS_ADDR: redis:6379
+      API_PORT: 4000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    profiles: ["tools"]
+    restart: "no"
+
   # Public demo callback sink: receives job webhooks at POST /hook, shows them
   # at GET / (auto-refreshing page) and GET /hits (JSON). In-network jobs use
   # http://callback:8080/hook. Publish 8080 to share the demo page publicly.
